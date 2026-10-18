@@ -1,0 +1,133 @@
+name: Android API Dynamic Analysis
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_path:
+        description: "APK path inside this repo on the dispatched ref (e.g. apks/app.apk). Takes priority over apk_url"
+        required: false
+        type: string
+        default: ""
+      apk_url:
+        description: "APK direct URL (.apk / .xapk)"
+        required: false
+        type: string
+        default: ""
+      package_name:
+        description: "Package name (e.g. com.example.app). Empty = auto-detect from the APK"
+        required: false
+        type: string
+        default: ""
+      duration_sec:
+        description: "Capture duration in seconds"
+        required: false
+        type: string
+        default: "60"
+      use_frida:
+        description: "Also run the passive Java-layer URL/DNS observer (frida_observe.js)"
+        required: false
+        type: boolean
+        default: false
+      runner:
+        description: "Runner (macos-13 is retired; macos-15-intel = Intel x86_64 + HVF)"
+        required: false
+        type: choice
+        default: macos-15-intel
+        options:
+          - macos-15-intel
+          - ubuntu-latest
+
+permissions:
+  contents: read
+
+jobs:
+  dynamic:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate inputs
+        env:
+          APK_PATH: ${{ inputs.apk_path }}
+          APK_URL: ${{ inputs.apk_url }}
+        run: |
+          if [ -z "$APK_PATH" ] && [ -z "$APK_URL" ]; then
+            echo "::error::apk_path or apk_url is required for dynamic capture"
+            exit 1
+          fi
+
+      - name: Enable KVM (Linux runner only)
+        if: runner.os == 'Linux'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install mitmproxy (and frida-tools if requested)
+        run: |
+          pip install --quiet mitmproxy
+          if [ "${{ inputs.use_frida }}" = "true" ]; then pip install --quiet frida frida-tools; fi
+
+      - name: Boot emulator, install, capture dynamic traffic
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          APK_PATH: ${{ inputs.apk_path }}
+          APK_URL: ${{ inputs.apk_url }}
+          PACKAGE_NAME: ${{ inputs.package_name }}
+          DURATION: ${{ inputs.duration_sec }}
+          USE_FRIDA: ${{ inputs.use_frida == true && '1' || '0' }}
+          OUT_DIR: ${{ github.workspace }}/out
+        with:
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          ram-size: 4096M
+          disk-size: 6000M
+          force-avd-creation: false
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: bash .github/scripts/capture_api_dynamic.sh
+
+      - name: Print results to job log / summary
+        if: always()
+        run: |
+          mkdir -p out
+          [ -f out/summary.md ] || echo "# no summary produced" > out/summary.md
+          for f in meta.txt install.log mitmdump.log frida.log summary.md; do
+            [ -f "out/$f" ] || continue
+            echo "::group::$f ($(wc -l < "out/$f") lines)"
+            head -n 800 "out/$f"
+            echo "::endgroup::"
+          done
+          {
+            echo "## Android API Dynamic Analysis"
+            echo '```'; cat out/meta.txt 2>/dev/null; echo '```'
+            echo "### Summary"
+            echo '```'; cat out/summary.md 2>/dev/null; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-api-dynamic-${{ github.run_id }}
+          path: |
+            out/flows.jsonl
+            out/java_events.jsonl
+            out/summary.md
+            out/meta.txt
+            out/install.log
+            out/mitmdump.log
+            out/frida.log
+          if-no-files-found: warn
+          retention-days: 14
