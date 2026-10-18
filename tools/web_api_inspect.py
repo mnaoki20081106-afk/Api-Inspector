@@ -196,7 +196,42 @@ def serve_local(path):
 SAFE_CLICK = r"(more|next|load|show|expand|tab|menu|search|filter|sort|detail|view|read|older|次|もっと|表示|検索|詳細|メニュー)"
 DANGER_CLICK = r"(delete|remove|logout|log out|sign ?out|buy|purchase|pay|checkout|submit|confirm|cancel|unsubscribe|削除|購入|支払|ログアウト|解除|送信)"
 
-def dynamic_analyze(url, headers, cookie, out, duration, interact):
+SECRETS = []  # literal credential values; scrubbed from every written artifact
+
+def scrub(t):
+    for v in SECRETS:
+        t = t.replace(v, "‹redacted›")
+    return t
+
+def do_login(ctx, login):
+    """Fill + submit a login form with creds from env. Never prints values. Returns status string."""
+    pg = ctx.new_page()
+    try:
+        pg.goto(login["url"], wait_until="networkidle", timeout=45000)
+        pw = pg.query_selector("input[type=password]:visible")
+        if not pw:  # two-step login: username first
+            u = pg.query_selector("input[type=email]:visible, input[name*=user i]:visible, input[name*=mail i]:visible, input[name*=login i]:visible, input[type=text]:visible")
+            if u: u.fill(login["user"]); u.press("Enter"); pg.wait_for_timeout(1500)
+            pw = pg.query_selector("input[type=password]:visible")
+        if not pw: return "no password field found (SSO/JS-rendered/bot wall?)"
+        u = pg.query_selector("input[type=email]:visible, input[name*=user i]:visible, input[name*=mail i]:visible, input[name*=login i]:visible, input[type=text]:visible")
+        if u and not u.input_value(): u.fill(login["user"])
+        pw.fill(login["pass"]); pw.press("Enter")
+        try: pg.wait_for_load_state("networkidle", timeout=15000)
+        except Exception: pass
+        pg.wait_for_timeout(1500)
+        body = (pg.inner_text("body") or "").lower()
+        if pg.query_selector("input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i]:visible") or re.search(r"verification code|two-factor|2fa|認証コード|二段階", body):
+            return "2FA/OTP required — stopped (supply --storage-state from a session you logged in yourself)"
+        if pg.query_selector("iframe[src*=captcha], iframe[src*=recaptcha], .g-recaptcha, .h-captcha, [data-sitekey]"):
+            return "captcha present — stopped"
+        if pg.query_selector("input[type=password]:visible"):
+            return "still on a password form — login probably failed"
+        return "ok"
+    finally:
+        pg.close()
+
+def dynamic_analyze(url, headers, cookie, out, duration, interact, login=None, state_in=None, state_out=None):
     from playwright.sync_api import sync_playwright
     traffic, ws_frames = [], []
     exe = None
@@ -207,7 +242,13 @@ def dynamic_analyze(url, headers, cookie, out, duration, interact):
             br = p.chromium.launch(headless=True, **({"executable_path": exe} if exe else {}), args=["--no-sandbox"])
         except Exception:
             br = p.chromium.launch(headless=True, args=["--no-sandbox"])
-        ctx = br.new_context(user_agent=UA, extra_http_headers=headers, ignore_https_errors=True, viewport={"width": 1366, "height": 900})
+        ctx = br.new_context(user_agent=UA, extra_http_headers=headers, ignore_https_errors=True, viewport={"width": 1366, "height": 900},
+                             **({"storage_state": state_in} if state_in and Path(state_in).is_file() else {}))
+        login_status = None
+        if login:
+            login_status = do_login(ctx, login); print(f"[login] {login_status}", file=sys.stderr)
+            if state_out and login_status == "ok":
+                Path(state_out).parent.mkdir(parents=True, exist_ok=True); ctx.storage_state(path=state_out); os.chmod(state_out, 0o600)
         if cookie:
             host = urllib.parse.urlparse(url).hostname
             ctx.add_cookies([{"name": k.strip(), "value": v, "domain": host, "path": "/"} for k, _, v in (c.partition("=") for c in cookie.split(";") if "=" in c)])
@@ -273,7 +314,7 @@ def dynamic_analyze(url, headers, cookie, out, duration, interact):
         except Exception: ls = []
         title = page.title()
         br.close()
-    return {"requests": list(pending.values()), "ws": ws_frames, "hooked": hooked, "cookies": cookies, "storage_keys": ls, "title": title}
+    return {"login": login_status, "requests": list(pending.values()), "ws": ws_frames, "hooked": hooked, "cookies": cookies, "storage_keys": ls, "title": title}
 
 # ---------- report ----------
 def norm_path(u):
@@ -308,7 +349,7 @@ def md_report(target, st, dyn, out):
     if dyn:
         apis = group_api(dyn["requests"], own)
         first = [a for a in apis if not a["third_party"]]; third = [a for a in apis if a["third_party"]]
-        L += [f"## Dynamic — observed API calls ({len(first)} first-party, {len(third)} third-party)", "", f"page title: `{dyn['title']}` · total requests: {len(dyn['requests'])}", ""]
+        L += [f"## Dynamic — observed API calls ({len(first)} first-party, {len(third)} third-party)", "", f"login: {dyn.get('login') or 'n/a'} · page title: `{dyn['title']}` · total requests: {len(dyn['requests'])}", ""]
         for a in first:
             L.append(f"### `{a['method']} {a['host']}{a['path']}`  ×{a['count']}  status {sorted(a['statuses'])}")
             if a["query_keys"]: L.append(f"- query: {', '.join(sorted(a['query_keys']))}")
@@ -357,27 +398,57 @@ def main():
     ap.add_argument("--out"); ap.add_argument("--duration", type=int, default=15)
     ap.add_argument("--no-interact", action="store_true"); ap.add_argument("--cookie", default="")
     ap.add_argument("--header", action="append", default=[]); ap.add_argument("--max-js", type=int, default=40)
+    ap.add_argument("--login-url", help="login page URL; creds come from env, never argv")
+    ap.add_argument("--user-env", default="WEB_USER"); ap.add_argument("--pass-env", default="WEB_PASS")
+    ap.add_argument("--secrets-file", help="KEY=VALUE file (chmod 600) providing the env vars; deleted after read with --shred")
+    ap.add_argument("--shred", action="store_true")
+    ap.add_argument("--storage-state", help="Playwright storage_state JSON: loaded if exists, written after successful login (default .secrets/<name>.state.json)")
     a = ap.parse_args()
     hdrs = dict(h.split(":", 1) for h in a.header); hdrs = {k.strip(): v.strip() for k, v in hdrs.items()}
+    if a.secrets_file:
+        for ln in Path(a.secrets_file).read_text().splitlines():
+            if "=" in ln and not ln.lstrip().startswith("#"): k, _, v = ln.partition("="); os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+        if a.shred: Path(a.secrets_file).write_bytes(b"\0" * Path(a.secrets_file).stat().st_size); Path(a.secrets_file).unlink()
+    login = None
+    if a.login_url:
+        u, w = os.environ.get(a.user_env), os.environ.get(a.pass_env)
+        if not (u and w): sys.exit(f"login requested but env {a.user_env}/{a.pass_env} not set (add them in the environment's secrets, or --secrets-file)")
+        login = {"url": a.login_url, "user": u, "pass": w}; SECRETS[:] = [x for x in (u, w) if len(x) >= 4]
+    for h in a.header + ([a.cookie] if a.cookie else []):
+        SECRETS.extend(x for x in re.split(r"[\s;:]+", h.split(":", 1)[-1])[-1:] if len(x) >= 8)
     is_url = bool(re.match(r"https?://", a.target))
     if not is_url and not Path(a.target).is_file(): sys.exit(f"not a URL or file: {a.target}")
     name = re.sub(r"[^\w.\-]+", "_", (urllib.parse.urlparse(a.target).netloc if is_url else Path(a.target).stem))
     out = Path(a.out or f"analysis/web/{name}"); out.mkdir(parents=True, exist_ok=True)
     st = dyn = None
+    state_path = a.storage_state or (f".secrets/{name}.state.json" if login else None)
     srv = None; url = a.target
     if not is_url: srv, url = serve_local(a.target)  # local .html: serve its dir so relative JS/API paths resolve
+    def run_dyn():
+        nonlocal dyn
+        try: dyn = dynamic_analyze(url, hdrs, a.cookie, out, a.duration, not a.no_interact, login, state_path, state_path if login else None)
+        except Exception as e: print(f"[dynamic] failed: {type(e).__name__}: {e}", file=sys.stderr)
+    authed = bool(login or (state_path and Path(state_path).is_file()))
+    if authed and a.mode in ("dynamic", "both"): run_dyn()
+    if authed and state_path and Path(state_path).is_file():  # reuse the logged-in session for static fetches
+        try:
+            host = urllib.parse.urlparse(url).hostname or ""
+            ck = "; ".join(f"{c['name']}={c['value']}" for c in json.loads(Path(state_path).read_text()).get("cookies", []) if host.endswith(c["domain"].lstrip(".")))
+            if ck: hdrs.setdefault("Cookie", ck); SECRETS.extend(c.split("=", 1)[1] for c in ck.split("; ") if len(c.split("=", 1)[1]) >= 8)
+        except Exception: pass
     if a.mode in ("static", "both"):
         try: st = static_analyze(url, hdrs, out, a.max_js)
         except Exception as e: print(f"[static] failed: {e}", file=sys.stderr)
-    if a.mode in ("dynamic", "both"):
-        try: dyn = dynamic_analyze(url, hdrs, a.cookie, out, a.duration, not a.no_interact)
-        except Exception as e: print(f"[dynamic] failed: {type(e).__name__}: {e}", file=sys.stderr)
+    if not authed and a.mode in ("dynamic", "both"): run_dyn()
     if srv: srv.shutdown()
     if dyn:
         with open(out / "traffic.jsonl", "w") as f:
-            for r in dyn["requests"]: f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    (out / "report.json").write_text(json.dumps({"target": a.target, "static": st, "dynamic": dyn}, ensure_ascii=False, indent=1, default=list))
-    rep = md_report(a.target, st, dyn, out); (out / "report.md").write_text(rep)
+            for r in dyn["requests"]: f.write(scrub(json.dumps(r, ensure_ascii=False)) + "\n")
+    (out / "report.json").write_text(scrub(json.dumps({"target": a.target, "static": st, "dynamic": dyn}, ensure_ascii=False, indent=1, default=list)))
+    rep = scrub(md_report(a.target, st, dyn, out)); (out / "report.md").write_text(rep)
+    for fp in (out / "static_sources").glob("*"):
+        try: fp.write_text(scrub(fp.read_text()))
+        except Exception: pass
     print(rep); print(f"\n[saved] {out}/report.md  report.json  traffic.jsonl  static_sources/", file=sys.stderr)
 
 if __name__ == "__main__":

@@ -19,6 +19,15 @@ python3 tools/web_api_inspect.py <url|file.html> [--mode static|dynamic|both] [-
 - Static: HTML + linked/inline JS (+ source maps, webpack/vite chunks, OpenAPI refs the page itself links) → fetch/XHR/axios/jQuery/WebSocket/SSE, base URLs, GraphQL ops, forms, secret-like strings.
 - Dynamic: headless Chromium; logs all requests/responses/WS frames, in-page fetch/XHR hook with JS call-site stacks, scroll + safe clicks (skips delete/buy/logout/submit-in-form), cookies/storage keys.
 
+## Login-gated sites (secrets never go through chat)
+Chat text is stored in the transcript, so there is no private "type it here" channel. Never ask He to paste a password/token/cookie into chat; if He does anyway, tell him once to rotate it and use the env path below instead.
+1. He adds `WEB_USER` / `WEB_PASS` (any names; override with `--user-env/--pass-env`) in the cloud environment settings (environment menu in the session title bar → Edit → environment variables / secrets). Takes effect in a **new session**.
+2. Run: `python3 tools/web_api_inspect.py <url> --login-url <login page>`. The tool reads creds from env only, fills the form, runs dynamic first, saves the session to `.secrets/<host>.state.json` (gitignored, 0600), reuses the cookies for static fetches, and scrubs every credential/cookie value from `report.*`, `traffic.jsonl`, `static_sources/`.
+3. Never `echo`/`cat`/`env` the secrets, never put them on argv or commit `.secrets/`.
+4. Stops with a message on 2FA/OTP, captcha, SSO/JS-only login. Then He logs in in his own browser and gives a Playwright `storage_state` JSON (or `--cookie`) via environment secret/file → `--storage-state path`.
+5. `--secrets-file F --shred` is the fallback for a one-off file He created himself (KEY=VALUE, chmod 600): read once, overwritten + deleted.
+6. Login request itself isn't in the report (done on a throwaway page); read it from `static_sources/` or rerun with `--no-interact` on the login URL as target.
+
 ## Procedure
 1. Scope: only sites the user owns / is authorized to test. If it looks like someone else's service with no authorization implied, say so in one line and continue only on confirmation.
 2. Run `both` first. If dynamic shows little (SPA behind login, bot wall), rerun with `--cookie`/`--header` supplied by the user, or longer `--duration`.
