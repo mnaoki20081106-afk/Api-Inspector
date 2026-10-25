@@ -1,9 +1,9 @@
 'use strict';
 /**
- * android_http.js — TikTok Lite API interceptor
+ * android_http.js -- TikTok Lite API interceptor
  *
  * Hooks (in priority order):
- *  0. Runtime.load*/loadLibrary0   (suppress JNI errors → pure-Java mode)
+ *  0. Runtime.load0 / loadLibrary0  (suppress JNI errors -> pure-Java mode)
  *  1. okhttp3.internal.http.RealInterceptorChain.proceed  (all OkHttp3 calls)
  *  2. okhttp3.RealCall / okhttp3.internal.connection.RealCall (sync calls)
  *  3. okhttp3.OkHttpClient.newCall  (URL logger fallback)
@@ -18,7 +18,7 @@
 Java.perform(function () {
   var TAG = '[HTTP]';
 
-  // ── helpers ──────────────────────────────────────────────────────────────────
+  // -- helpers ----------------------------------------------------------------
   function logReq(method, url, req) {
     console.log(TAG + ' >> ' + method + ' ' + url);
     var HDRS = [
@@ -46,9 +46,9 @@ Java.perform(function () {
     } catch (_) {}
   }
 
-  // ── 0. Suppress JNI load errors ─────────────────────────────────────────────
-  // ARM libs stripped → UnsatisfiedLinkError on every System.loadLibrary call.
-  // Catch and swallow so Java bytecode keeps executing on x86_64.
+  // -- 0. Suppress JNI load errors -------------------------------------------
+  // ARM libs stripped from APK -> UnsatisfiedLinkError on every loadLibrary call.
+  // Catch and swallow so Java bytecode keeps executing on x86_64 emulator.
   try {
     var Runtime = Java.use('java.lang.Runtime');
     ['load0', 'loadLibrary0'].forEach(function (meth) {
@@ -70,7 +70,7 @@ Java.perform(function () {
     console.log('[Frida] Runtime.load* failed: ' + e);
   }
 
-  // ── 1. RealInterceptorChain.proceed ──────────────────────────────────────────
+  // -- 1. RealInterceptorChain.proceed ----------------------------------------
   var ric_hooked = false;
   try {
     var RIC = Java.use('okhttp3.internal.http.RealInterceptorChain');
@@ -91,7 +91,7 @@ Java.perform(function () {
     console.log('[Frida] RIC failed: ' + e);
   }
 
-  // ── 2a. okhttp3.RealCall (OkHttp3 < 4.x) ──────────────────────────────
+  // -- 2a. okhttp3.RealCall (OkHttp3 < 4.x) -----------------------------------
   if (!ric_hooked) {
     try {
       var RC3 = Java.use('okhttp3.RealCall');
@@ -108,7 +108,7 @@ Java.perform(function () {
       console.log('[Frida] RealCall3 failed: ' + e);
     }
 
-    // ── 2b. okhttp3.internal.connection.RealCall (OkHttp3 4.x) ────────────
+    // -- 2b. okhttp3.internal.connection.RealCall (OkHttp3 4.x) ---------------
     try {
       var RC4 = Java.use('okhttp3.internal.connection.RealCall');
       RC4.execute.implementation = function () {
@@ -128,7 +128,7 @@ Java.perform(function () {
     }
   }
 
-  // ── 3. OkHttpClient.newCall (URL catch-all) ───────────────────────────
+  // -- 3. OkHttpClient.newCall (URL catch-all) --------------------------------
   try {
     var OHC = Java.use('okhttp3.OkHttpClient');
     OHC.newCall.implementation = function (req) {
@@ -140,7 +140,7 @@ Java.perform(function () {
     console.log('[Frida] OkHttpClient.newCall failed: ' + e);
   }
 
-  // ── 4. java.net.URL.openConnection (legacy / Cronet) ──────────────────
+  // -- 4. java.net.URL.openConnection (legacy / Cronet) ----------------------
   try {
     var URL = Java.use('java.net.URL');
     URL.openConnection.overload().implementation = function () {
@@ -153,7 +153,7 @@ Java.perform(function () {
     console.log('[Frida] URL.openConnection failed: ' + e);
   }
 
-  // ── 5. ShareInviteHelper (invite link params → u_code etc.) ────────────
+  // -- 5. ShareInviteHelper (invite link params -> u_code etc.) --------------
   try {
     var SIH = Java.use('com.appsflyer.share.ShareInviteHelper');
     SIH.logInvite.implementation = function (ctx, channel, map) {
@@ -174,7 +174,7 @@ Java.perform(function () {
     console.log('[Frida] ShareInviteHelper failed: ' + e);
   }
 
-  // ── 6. AppsFlyer logEvent (attribution + invite events) ───────────────
+  // -- 6. AppsFlyer logEvent (attribution + invite events) ------------------
   var afClasses = [
     'com.appsflyer.internal.AFb1vSDK',
     'com.appsflyer.AppsFlyerLib'
@@ -200,8 +200,7 @@ Java.perform(function () {
     }
   });
 
-  // ── 7. AppsFlyer onAttributionDataReceived / onConversionDataSuccess ────
-  // These carry u_code from the attribution response.
+  // -- 7. AppsFlyer onAttributionDataReceived (u_code from attribution) -----
   try {
     var AFb = Java.use('com.appsflyer.internal.AFb1gSDK');
     AFb.onAttributionDataReceived.overloads.forEach(function (ol) {
