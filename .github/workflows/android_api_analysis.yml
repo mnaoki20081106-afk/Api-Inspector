@@ -4,51 +4,29 @@ on:
   workflow_dispatch:
     inputs:
       apk_path:
-        description: "APK path inside this repo on the dispatched ref (e.g. apks/app.apk). Takes priority over apk_url"
+        description: "APK path inside this repo (e.g. apks/app.apk). Takes priority over apk_url"
         required: false
         type: string
         default: ""
       apk_url:
-        description: "APK direct URL (.apk / .xapk). Empty = look up package_name on F-Droid"
+        description: "APK direct download URL (.apk / .xapk / bundle)"
         required: false
         type: string
         default: ""
       package_name:
-        description: "Package name (e.g. com.example.app). Empty = auto-detect from the APK"
+        description: "Package name (e.g. com.example.app). Used for F-Droid fallback and manifest auto-detect"
         required: false
         type: string
         default: ""
-      duration_sec:
-        description: "Capture duration in seconds"
-        required: false
-        type: string
-        default: "60"
-      arch:
-        description: "Emulator CPU architecture. Use arm64-v8a for ARM-only APKs (requires macos-14 runner)"
-        required: false
-        type: choice
-        default: x86_64
-        options:
-          - x86_64
-          - arm64-v8a
-      runner:
-        description: "Runner. macos-14 = Apple Silicon M1 (arm64); macos-15 = M2/M3; macos-15-intel = Intel x86_64; ubuntu-latest = KVM (x86_64 only)"
-        required: false
-        type: choice
-        default: macos-15-intel
-        options:
-          - macos-15-intel
-          - macos-14
-          - macos-15
-          - ubuntu-latest
 
 permissions:
   contents: read
 
 jobs:
   analyze:
-    runs-on: ${{ inputs.runner }}
-    timeout-minutes: 90
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
       - uses: actions/checkout@v4
 
@@ -59,75 +37,41 @@ jobs:
           PACKAGE_NAME: ${{ inputs.package_name }}
         run: |
           if [ -z "$APK_PATH" ] && [ -z "$APK_URL" ] && [ -z "$PACKAGE_NAME" ]; then
-            echo "::error::apk_path, apk_url or package_name is required"
+            echo "::error::Provide apk_path, apk_url, or package_name"
             exit 1
           fi
 
-      - name: Enable KVM (Linux runner only)
-        if: runner.os == 'Linux'
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Pre-install arm64-v8a system image
-        if: inputs.arch == 'arm64-v8a'
-        run: |
-          API_LEVEL=${{ inputs.arch == 'arm64-v8a' && '30' || '33' }}
-          IMG="system-images;android-${API_LEVEL};default;arm64-v8a"
-          echo "Installing $IMG"
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "$IMG"
-          echo "Installed. Listing:"
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list_installed | grep "system-images" || true
-
-      - name: Boot emulator, install, capture logcat
-        uses: reactivecircus/android-emulator-runner@v2
+      - name: Static analysis (jadx)
         env:
           APK_PATH: ${{ inputs.apk_path }}
           APK_URL: ${{ inputs.apk_url }}
           PACKAGE_NAME: ${{ inputs.package_name }}
-          DURATION: ${{ inputs.duration_sec }}
           OUT_DIR: ${{ github.workspace }}/out
-        with:
-          api-level: ${{ inputs.arch == 'arm64-v8a' && '30' || '33' }}
-          target: ${{ inputs.arch == 'arm64-v8a' && 'default' || 'google_apis' }}
-          arch: ${{ inputs.arch }}
-          ram-size: 4096M
-          disk-size: 6000M
-          force-avd-creation: true
-          disable-animations: true
-          emulator-boot-timeout: 600
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -no-accel
-          script: bash .github/scripts/capture_api_logs.sh
+        run: bash .github/scripts/static_analysis.sh
 
       - name: Print results to job log / summary
         if: always()
         run: |
           mkdir -p out
-          [ -f out/api_logs.txt ] || : > out/api_logs.txt
-          for f in meta.txt install.log urls.txt api_logs_strict.txt api_logs.txt; do
+          for f in meta.txt jadx.log urls.txt analysis.txt; do
             [ -f "out/$f" ] || continue
             echo "::group::$f ($(wc -l < "out/$f") lines)"
-            head -n 800 "out/$f"
+            cat "out/$f"
             echo "::endgroup::"
           done
           {
-            echo "## Android API Analysis"
+            echo "## TikTok Lite Static Analysis"
             echo '```'; cat out/meta.txt 2>/dev/null; echo '```'
-            echo "### URLs ($(wc -l < out/urls.txt 2>/dev/null || echo 0))"
-            echo '```'; head -n 100 out/urls.txt 2>/dev/null; echo '```'
+            echo "### Endpoints ($(wc -l < out/urls.txt 2>/dev/null || echo 0))"
+            echo '```'; cat out/urls.txt 2>/dev/null; echo '```'
+            echo "### Full analysis"
+            echo '```'; cat out/analysis.txt 2>/dev/null; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: android-api-logs-${{ github.run_id }}
+          name: static-analysis-${{ github.run_id }}
           path: out/
           if-no-files-found: warn
           retention-days: 14
