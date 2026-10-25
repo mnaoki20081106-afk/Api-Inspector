@@ -48,7 +48,7 @@ permissions:
 jobs:
   analyze:
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -81,7 +81,6 @@ jobs:
           API_LEVEL=${{ inputs.arch == 'arm64-v8a' && '30' || '33' }}
           IMG="system-images;android-${API_LEVEL};default;arm64-v8a"
           echo "Installing $IMG"
-          # Accept all licenses first
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "$IMG"
           echo "Installed. Listing:"
@@ -103,8 +102,8 @@ jobs:
           disk-size: 6000M
           force-avd-creation: true
           disable-animations: true
-          emulator-boot-timeout: 300
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          emulator-boot-timeout: 600
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -no-accel
           script: bash .github/scripts/capture_api_logs.sh
 
       - name: Print results to job log / summary
