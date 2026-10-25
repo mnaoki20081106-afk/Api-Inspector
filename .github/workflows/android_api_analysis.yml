@@ -24,7 +24,7 @@ on:
         type: string
         default: "60"
       arch:
-        description: "Emulator CPU architecture. Use arm64-v8a for ARM-only APKs (requires macos-15 runner)"
+        description: "Emulator CPU architecture. Use arm64-v8a for ARM-only APKs (requires macos-14 runner)"
         required: false
         type: choice
         default: x86_64
@@ -32,12 +32,13 @@ on:
           - x86_64
           - arm64-v8a
       runner:
-        description: "Runner. macos-15 = Apple Silicon (arm64); macos-15-intel = Intel x86_64; ubuntu-latest = KVM (x86_64 only)"
+        description: "Runner. macos-14 = Apple Silicon M1 (arm64); macos-15 = M2/M3; macos-15-intel = Intel x86_64; ubuntu-latest = KVM (x86_64 only)"
         required: false
         type: choice
         default: macos-15-intel
         options:
           - macos-15-intel
+          - macos-14
           - macos-15
           - ubuntu-latest
 
@@ -83,14 +84,15 @@ jobs:
           DURATION: ${{ inputs.duration_sec }}
           OUT_DIR: ${{ github.workspace }}/out
         with:
-          api-level: 33
+          api-level: ${{ inputs.arch == 'arm64-v8a' && '28' || '33' }}
           target: ${{ inputs.arch == 'arm64-v8a' && 'default' || 'google_apis' }}
           arch: ${{ inputs.arch }}
-          profile: pixel_6
+          profile: pixel_4
           ram-size: 4096M
           disk-size: 6000M
           force-avd-creation: false
           disable-animations: true
+          emulator-boot-timeout: 300
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           script: bash .github/scripts/capture_api_logs.sh
 
@@ -98,9 +100,7 @@ jobs:
         if: always()
         run: |
           mkdir -p out
-          # api_logs.txt must exist even when nothing was captured
           [ -f out/api_logs.txt ] || : > out/api_logs.txt
-          # job log is the primary channel for Claude (get_job_logs); artifact is the full copy
           for f in meta.txt install.log urls.txt api_logs_strict.txt api_logs.txt; do
             [ -f "out/$f" ] || continue
             echo "::group::$f ($(wc -l < "out/$f") lines)"
