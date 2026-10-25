@@ -23,13 +23,22 @@ on:
         required: false
         type: string
         default: "60"
+      arch:
+        description: "Emulator CPU architecture. Use arm64-v8a for ARM-only APKs (requires macos-15 runner)"
+        required: false
+        type: choice
+        default: x86_64
+        options:
+          - x86_64
+          - arm64-v8a
       runner:
-        description: "Runner (macos-13 is retired; macos-15-intel = Intel x86_64 + HVF)"
+        description: "Runner. macos-15 = Apple Silicon (arm64); macos-15-intel = Intel x86_64; ubuntu-latest = KVM (x86_64 only)"
         required: false
         type: choice
         default: macos-15-intel
         options:
           - macos-15-intel
+          - macos-15
           - ubuntu-latest
 
 permissions:
@@ -75,8 +84,8 @@ jobs:
           OUT_DIR: ${{ github.workspace }}/out
         with:
           api-level: 33
-          target: google_apis
-          arch: x86_64
+          target: ${{ inputs.arch == 'arm64-v8a' && 'default' || 'google_apis' }}
+          arch: ${{ inputs.arch }}
           profile: pixel_6
           ram-size: 4096M
           disk-size: 6000M
