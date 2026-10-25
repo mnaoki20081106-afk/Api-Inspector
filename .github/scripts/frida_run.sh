@@ -98,16 +98,19 @@ run() {
   [[ -f "$js" ]] || { log "missing $js"; exit 1; }
 
   adb wait-for-device
-  adb root && sleep 3 \
-    || log "adb root skipped (non-root image?)"
+  # adb root restarts adbd — wait for device to come back before proceeding
+  adb root || log "adb root skipped (non-root image?)"
+  adb wait-for-device
+  sleep 5
 
   # Push frida-server
   log "pushing frida-server"
   adb push apk/frida-server /data/local/tmp/frida-server
   adb shell chmod 755 /data/local/tmp/frida-server
-  adb shell /data/local/tmp/frida-server --daemonize \
-    || adb shell "nohup /data/local/tmp/frida-server > /dev/null 2>&1 &"
-  sleep 4
+  # Use nohup+& so adb shell returns immediately instead of hanging
+  adb shell "nohup /data/local/tmp/frida-server > /dev/null 2>&1 &" \
+    || log "frida-server start attempted (exit ignored)"
+  sleep 5
 
   # Disable package verifier
   adb shell settings put global package_verifier_enable 0 || true
@@ -151,7 +154,10 @@ run() {
   grep -oE 'https?://[^[:space:]"'"'"'<>]+' "$OUT_DIR/frida_output.txt" \
     | sort -u > "$OUT_DIR/urls.txt" 2>/dev/null || true
 
-  log "done: $(wc -l < "$OUT_DIR/frida_output.txt") frida lines, $(wc -l < "$OUT_DIR/urls.txt") urls"
+  local flines=0 ulines=0
+  [[ -f "$OUT_DIR/frida_output.txt" ]] && flines=$(wc -l < "$OUT_DIR/frida_output.txt")
+  [[ -f "$OUT_DIR/urls.txt" ]]         && ulines=$(wc -l < "$OUT_DIR/urls.txt")
+  log "done: ${flines} frida lines, ${ulines} urls"
 }
 
 case "$phase" in
