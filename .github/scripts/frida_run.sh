@@ -43,7 +43,9 @@ prepare() {
     log "detected package: $PKG"
   fi
 
-  # 2. Strip arm64/armeabi libs so x86_64 emulator accepts the APK
+  # 2. Strip all ARM native libs — x86_64 emulator has no houdini translation;
+  #    JNI UnsatisfiedLinkErrors are suppressed by the Frida script so Java
+  #    bytecode keeps running.
   log "stripping arm native libs"
   cp apk/orig.apk apk/stripped.apk
   zip -d apk/stripped.apk \
@@ -140,14 +142,10 @@ run() {
   fi
   log "target package: $PKG"
 
-  # Launch app
-  log "launching $PKG"
-  adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 2>/dev/null || true
-  sleep 6
-
-  # Attach Frida
-  log "attaching frida for ${DURATION}s"
-  frida -U -n "$PKG" -l "$js" --runtime=v8 \
+  # Spawn Frida: -f starts the process itself with hooks loaded from the start.
+  # The script suppresses JNI load errors so Java bytecode runs on x86_64.
+  log "spawning frida for ${DURATION}s"
+  frida -U -f "$PKG" -l "$js" --runtime=v8 \
     2>&1 | timeout "$DURATION" cat > "$OUT_DIR/frida_output.txt" || true
 
   # Extract unique URLs

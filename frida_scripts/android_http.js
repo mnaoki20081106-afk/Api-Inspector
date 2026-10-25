@@ -3,12 +3,14 @@
  * android_http.js — TikTok Lite API interceptor
  *
  * Hooks (in priority order):
+ *  0. Runtime.load*/loadLibrary0   (suppress JNI errors → pure-Java mode)
  *  1. okhttp3.internal.http.RealInterceptorChain.proceed  (all OkHttp3 calls)
  *  2. okhttp3.RealCall / okhttp3.internal.connection.RealCall (sync calls)
  *  3. okhttp3.OkHttpClient.newCall  (URL logger fallback)
  *  4. java.net.URL.openConnection   (Cronet / legacy)
  *  5. com.appsflyer.share.ShareInviteHelper (invite link params)
  *  6. AppsFlyer logEvent            (attribution events)
+ *  7. AFb1gSDK.onAttributionDataReceived (u_code from attribution)
  *
  * Output format: [HTTP] >> METHOD URL | [HTTP] << CODE URL | [AF] event
  */
@@ -16,7 +18,7 @@
 Java.perform(function () {
   var TAG = '[HTTP]';
 
-  // ── helpers ──────────────────────────────────────────────────────────────
+  // ── helpers ──────────────────────────────────────────────────────────────────
   function logReq(method, url, req) {
     console.log(TAG + ' >> ' + method + ' ' + url);
     var HDRS = [
@@ -44,7 +46,31 @@ Java.perform(function () {
     } catch (_) {}
   }
 
-  // ── 1. RealInterceptorChain.proceed ──────────────────────────────────────
+  // ── 0. Suppress JNI load errors ─────────────────────────────────────────────
+  // ARM libs stripped → UnsatisfiedLinkError on every System.loadLibrary call.
+  // Catch and swallow so Java bytecode keeps executing on x86_64.
+  try {
+    var Runtime = Java.use('java.lang.Runtime');
+    ['load0', 'loadLibrary0'].forEach(function (meth) {
+      try {
+        Runtime[meth].overloads.forEach(function (ol) {
+          ol.implementation = function () {
+            var name = arguments[arguments.length - 1];
+            try {
+              return ol.apply(this, arguments);
+            } catch (e) {
+              console.log('[LOAD] suppressed ' + name + ': ' + e.message);
+            }
+          };
+        });
+      } catch (e2) {}
+    });
+    console.log('[Frida] Runtime.load* hooks armed (JNI suppression active)');
+  } catch (e) {
+    console.log('[Frida] Runtime.load* failed: ' + e);
+  }
+
+  // ── 1. RealInterceptorChain.proceed ──────────────────────────────────────────
   var ric_hooked = false;
   try {
     var RIC = Java.use('okhttp3.internal.http.RealInterceptorChain');
@@ -82,7 +108,7 @@ Java.perform(function () {
       console.log('[Frida] RealCall3 failed: ' + e);
     }
 
-    // ── 2b. okhttp3.internal.connection.RealCall (OkHttp3 4.x) ──────────
+    // ── 2b. okhttp3.internal.connection.RealCall (OkHttp3 4.x) ────────────
     try {
       var RC4 = Java.use('okhttp3.internal.connection.RealCall');
       RC4.execute.implementation = function () {
@@ -127,7 +153,7 @@ Java.perform(function () {
     console.log('[Frida] URL.openConnection failed: ' + e);
   }
 
-  // ── 5. ShareInviteHelper (invite link params → u_code etc.) ──────────
+  // ── 5. ShareInviteHelper (invite link params → u_code etc.) ────────────
   try {
     var SIH = Java.use('com.appsflyer.share.ShareInviteHelper');
     SIH.logInvite.implementation = function (ctx, channel, map) {
@@ -174,7 +200,7 @@ Java.perform(function () {
     }
   });
 
-  // ── 7. AppsFlyer onAttributionDataReceived / onConversionDataSuccess ──
+  // ── 7. AppsFlyer onAttributionDataReceived / onConversionDataSuccess ────
   // These carry u_code from the attribution response.
   try {
     var AFb = Java.use('com.appsflyer.internal.AFb1gSDK');
