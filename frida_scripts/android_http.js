@@ -3,8 +3,7 @@
  * android_http.js -- TikTok Lite API interceptor
  *
  * Hooks (in priority order):
- * -1. Universal native-method stub (prevents crash after ARM libs stripped)
- *  0. Runtime.load0 / loadLibrary0  (suppress JNI errors -> pure-Java mode)
+ *  0. Runtime.load0 / loadLibrary0  (suppress JNI load failures -> fallback)
  *  1. okhttp3.internal.http.RealInterceptorChain.proceed  (all OkHttp3 calls)
  *  2. okhttp3.RealCall / okhttp3.internal.connection.RealCall (sync calls)
  *  3. okhttp3.OkHttpClient.newCall  (URL logger fallback)
@@ -19,7 +18,7 @@
 Java.perform(function () {
   var TAG = '[HTTP]';
 
-  // -- -1. Universal native-method stub ---------------------------------------
+  // -- native-method stub utility (used for known crasher classes only) -------
   var stubbedNative = {};
   function stubNativeMethods(className) {
     if (stubbedNative[className]) return;
@@ -65,37 +64,6 @@ Java.perform(function () {
       if (cn.indexOf(SYSTEM_PREFIXES[i]) === 0) return true;
     }
     return false;
-  }
-
-  function scanLoadedClassesForNatives() {
-    try {
-      Java.enumerateLoadedClassesSync().forEach(function (cn) {
-        if (!isSystemClass(cn)) {
-          stubNativeMethods(cn);
-        }
-      });
-    } catch (e) {
-      console.log('[STUB] scan failed: ' + e);
-    }
-  }
-
-  try {
-    var CL = Java.use('java.lang.ClassLoader');
-    CL.loadClass.overloads.forEach(function (ol) {
-      ol.implementation = function () {
-        var cls = ol.apply(this, arguments);
-        try {
-          var name = arguments[0];
-          if (typeof name === 'string' && !isSystemClass(name)) {
-            stubNativeMethods(name);
-          }
-        } catch (eL) {}
-        return cls;
-      };
-    });
-    console.log('[Frida] ClassLoader.loadClass hooked (event-driven native stub)');
-  } catch (eCL) {
-    console.log('[Frida] ClassLoader.loadClass hook failed: ' + eCL);
   }
 
   // Fix #1: SecApiImpl.initSec -> avoids ms.bd.o.k.a crash
@@ -194,7 +162,7 @@ Java.perform(function () {
     } catch (_) {}
   }
 
-  // -- 0. Suppress JNI load errors -------------------------------------------
+  // -- 0. Suppress JNI load failures -----------------------------------------
   try {
     var Runtime = Java.use('java.lang.Runtime');
     ['load0', 'loadLibrary0'].forEach(function (meth) {
@@ -211,7 +179,7 @@ Java.perform(function () {
         });
       } catch (e2) {}
     });
-    console.log('[Frida] Runtime.load* hooks armed (JNI suppression active)');
+    console.log('[Frida] Runtime.load* hooks armed (JNI failure fallback active)');
   } catch (e) {
     console.log('[Frida] Runtime.load* failed: ' + e);
   }

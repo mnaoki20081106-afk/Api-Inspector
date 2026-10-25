@@ -30,7 +30,7 @@ permissions:
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
@@ -45,7 +45,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Prepare (download APK, strip arm64 libs, re-sign, install Frida)
+      - name: Prepare (download APK, re-sign, install Frida for arm64)
         env:
           APK_URL: ${{ inputs.apk_url }}
           APK_PATH: ${{ inputs.apk_path }}
@@ -57,11 +57,12 @@ jobs:
       - uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 29
-          arch: x86_64
+          arch: arm64-v8a
           target: default
           profile: pixel_2
           avd-name: frida_avd
           force-avd-creation: false
+          emulator-boot-timeout: 1200
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 3072
           disable-animations: true
           script: >

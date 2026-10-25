@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Frida-based dynamic analysis for Android APKs.
-# Phase "prepare": download APK, strip arm64 libs, re-sign, install Frida tools.
+# Phase "prepare": download APK, re-sign, install Frida tools (arm64).
 # Phase "run":     push frida-server, install APK, hook, capture.
 # Env: APK_URL, APK_PATH, PACKAGE_NAME, DURATION_SEC, OUT_DIR
 set -euo pipefail
@@ -43,13 +43,8 @@ prepare() {
     log "detected package: $PKG"
   fi
 
-  # 2. Strip all ARM native libs — x86_64 emulator has no houdini translation;
-  #    JNI UnsatisfiedLinkErrors are suppressed by the Frida script so Java
-  #    bytecode keeps running.
-  log "stripping arm native libs"
+  # 2. Copy APK for signing pipeline (arm64 native libs kept for arm64 emulator)
   cp apk/orig.apk apk/stripped.apk
-  zip -d apk/stripped.apk \
-    'lib/arm64-v8a/*' 'lib/armeabi-v7a/*' 'lib/armeabi/*' 2>/dev/null || true
 
   # 3. Zipalign + re-sign with debug key
   sudo apt-get install -y -q zipalign apksigner 2>/dev/null || true
@@ -71,10 +66,10 @@ prepare() {
     --ks-pass pass:debugkey --key-pass pass:debugkey \
     --out apk/signed.apk apk/aligned.apk
 
-  # 4. Download frida-server (x86_64 for the emulator)
-  log "downloading frida-server $FRIDA_VERSION (x86_64)"
+  # 4. Download frida-server (arm64 for the emulator)
+  log "downloading frida-server $FRIDA_VERSION (arm64)"
   curl -fL --retry 3 \
-    "https://github.com/frida/frida/releases/download/${FRIDA_VERSION}/frida-server-${FRIDA_VERSION}-android-x86_64.xz" \
+    "https://github.com/frida/frida/releases/download/${FRIDA_VERSION}/frida-server-${FRIDA_VERSION}-android-arm64.xz" \
     | xz -d > apk/frida-server
   chmod +x apk/frida-server
 
@@ -129,7 +124,6 @@ run() {
       mkdir -p apk/bundle
       unzip -qo apk/orig.apk base.apk -d apk/bundle 2>/dev/null || true
       if [[ -f apk/bundle/base.apk ]]; then
-        zip -d apk/bundle/base.apk 'lib/arm64-v8a/*' 2>/dev/null || true
         adb install -r -g -t apk/bundle/base.apk 2>&1 | tee -a "$install_log" || true
       fi
     fi
@@ -143,7 +137,6 @@ run() {
   log "target package: $PKG"
 
   # Spawn Frida: -f starts the process itself with hooks loaded from the start.
-  # The script suppresses JNI load errors so Java bytecode runs on x86_64.
   log "spawning frida for ${DURATION}s"
   frida -U -f "$PKG" -l "$js" --runtime=v8 \
     2>&1 | timeout "$DURATION" cat > "$OUT_DIR/frida_output.txt" || true
