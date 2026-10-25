@@ -1,0 +1,98 @@
+name: Frida Android Analysis
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        description: Direct APK download URL
+        required: false
+        type: string
+        default: ""
+      apk_path:
+        description: Path to APK in repo checkout
+        required: false
+        type: string
+        default: ""
+      package_name:
+        description: Package name (e.g. com.zhiliaoapp.musically.go)
+        required: false
+        type: string
+        default: ""
+      duration_sec:
+        description: Hook duration in seconds
+        required: false
+        type: string
+        default: "90"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Prepare (download APK, strip arm64 libs, re-sign, install Frida)
+        env:
+          APK_URL: ${{ inputs.apk_url }}
+          APK_PATH: ${{ inputs.apk_path }}
+          PACKAGE_NAME: ${{ inputs.package_name }}
+          DURATION_SEC: ${{ inputs.duration_sec }}
+          OUT_DIR: ${{ github.workspace }}/out
+        run: bash .github/scripts/frida_run.sh prepare
+
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          arch: x86_64
+          target: default
+          profile: pixel_2
+          avd-name: frida_avd
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 3072
+          disable-animations: true
+          script: >
+            OUT_DIR=${{ github.workspace }}/out
+            PACKAGE_NAME=${{ inputs.package_name }}
+            DURATION_SEC=${{ inputs.duration_sec }}
+            bash .github/scripts/frida_run.sh run
+
+      - name: Print results
+        if: always()
+        run: |
+          mkdir -p out
+          for f in meta.txt install.log frida_output.txt urls.txt; do
+            [ -f "out/$f" ] || continue
+            echo "::group::$f ($(wc -l < "out/$f") lines)"
+            cat "out/$f"
+            echo "::endgroup::"
+          done
+          {
+            echo "## TikTok Lite Frida Analysis"
+            echo '```'; cat out/meta.txt 2>/dev/null; echo '```'
+            echo "### Captured endpoints ($(wc -l < out/urls.txt 2>/dev/null || echo 0))"
+            echo '```'; cat out/urls.txt 2>/dev/null; echo '```'
+            echo "### Frida output (first 600 lines)"
+            echo '```'; head -600 out/frida_output.txt 2>/dev/null; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frida-analysis-${{ github.run_id }}
+          path: out/
+          if-no-files-found: warn
+          retention-days: 14
