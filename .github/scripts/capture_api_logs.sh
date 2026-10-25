@@ -93,16 +93,24 @@ resolve_apk() {
 
 install_apk() {
   local f=apk/target.bin res
-  if unzip -l "$f" 2>/dev/null | grep -q ' AndroidManifest.xml$'; then
-    res=$(adb install -r -g -t "$f" 2>&1)
-  else
-    # xapk / apks bundle: install all splits
-    log "bundle detected, installing splits"
-    mkdir -p apk/splits && unzip -qo "$f" -d apk/splits
-    mapfile -t splits < <(find apk/splits -name '*.apk' | sort)
-    [[ ${#splits[@]} -gt 0 ]] || { log "no .apk inside bundle"; return 1; }
-    res=$(adb install-multiple -r -g -t "${splits[@]}" 2>&1)
+  # Try direct install first — handles plain APK regardless of internal layout
+  res=$(adb install -r -g -t "$f" 2>&1)
+  if grep -q '^Success' <<<"$res"; then
+    echo "$res" | tee "$OUT_DIR/install.log"
+    return 0
   fi
+  log "direct install failed: $(echo "$res" | tail -1)"
+  # Fall back: unzip bundle and install-multiple splits (.apk or .apks)
+  log "trying bundle install"
+  mkdir -p apk/splits && unzip -qo "$f" -d apk/splits 2>/dev/null || true
+  log "bundle contents: $(find apk/splits -type f | head -20 | tr '\n' ' ')"
+  mapfile -t splits < <(find apk/splits \( -name '*.apk' -o -name '*.apks' \) | sort)
+  if [[ ${#splits[@]} -eq 0 ]]; then
+    log "no .apk/.apks inside bundle"
+    echo "$res" | tee "$OUT_DIR/install.log"
+    return 1
+  fi
+  res=$(adb install-multiple -r -g -t "${splits[@]}" 2>&1)
   echo "$res" | tee "$OUT_DIR/install.log"
   grep -q '^Success' <<<"$res"
 }
