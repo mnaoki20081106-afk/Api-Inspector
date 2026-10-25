@@ -96,12 +96,13 @@ Java.perform(function () {
     }
   }
 
-  // Event-driven catch: polling enumerateLoadedClassesSync loses the race
-  // when a background thread loads an obfuscated vendor class (e.g.
-  // ms.bd.o.k) and calls its native method within the same tick (confirmed
-  // in Run 7 - ms.bd.o.k.a crashed despite 1s/200ms polling). Hook
-  // ClassLoader.loadClass itself so every class load is stubbed the instant
-  // it resolves, synchronously, before any caller can invoke a method on it.
+  // Event-driven catch attempt: hook ClassLoader.loadClass so every class
+  // load is stubbed the instant it resolves. NOTE: confirmed in Run 8 this
+  // does NOT catch ms.bd.o.k - ART's ClassLinker resolves most implicit
+  // class references directly from the dex without ever calling the public
+  // loadClass() method, so this hook only helps for explicit Class.forName
+  // style lookups. Kept as a best-effort layer; see the targeted fix below
+  // for the actual crasher.
   try {
     var CL = Java.use('java.lang.ClassLoader');
     CL.loadClass.overloads.forEach(function (ol) {
@@ -119,6 +120,25 @@ Java.perform(function () {
     console.log('[Frida] ClassLoader.loadClass hooked (event-driven native stub)');
   } catch (eCL) {
     console.log('[Frida] ClassLoader.loadClass hook failed: ' + eCL);
+  }
+
+  // Targeted fix for the confirmed crasher: ms.bd.o.k.a is reached only via
+  // com.ss.android.ugc.aweme.sec.SecApiImpl.initSec(). Rather than chase the
+  // obfuscated native class (ART resolves it before any Java-level hook can
+  // intervene), neuter initSec itself so the call chain never reaches the
+  // native method at all. This is ByteDance's security/anti-tamper SDK init,
+  // not anything needed for the invite/attribution flow we're after.
+  try {
+    var SecApi = Java.use('com.ss.android.ugc.aweme.sec.SecApiImpl');
+    SecApi.initSec.overloads.forEach(function (ol) {
+      ol.implementation = function () {
+        console.log('[STUB] skipped SecApiImpl.initSec (avoids ms.bd.o.k.a native crash)');
+        return undefined;
+      };
+    });
+    console.log('[Frida] SecApiImpl.initSec neutered');
+  } catch (eSec) {
+    console.log('[Frida] SecApiImpl.initSec hook failed: ' + eSec);
   }
 
   // Initial pass over whatever is already loaded, plus periodic rescans as
