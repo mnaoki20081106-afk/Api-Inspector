@@ -182,23 +182,27 @@ Java.perform(function () {
   // Run 12: NativeABManager fix worked, but the very same DFServiceInitTask
   // chain (CreativeToolImpl's native video-editing SDK init) hit yet another
   // native method: com.ss.android.vesdklite.log.LELogcat.nativeLog - just a
-  // native logger call. This whole dynamic-feature module (video creative
-  // tools/camera/editor) is unrelated to the invite/attribution/coin flow
-  // we're tracing and is clearly riddled with native inits. Rather than
-  // whack-a-mole each one, neuter the task that starts the whole chain:
-  // DFServiceInitTask.run(). Skips CreativeToolImpl init (and everything
-  // under it: NativeABManager, LELogcat, etc.) in one hook.
+  // native logger call.
+  //
+  // Run 13/14: tried neutering the whole DFServiceInitTask.run() to avoid
+  // whack-a-mole, but that caused the app to HANG (no crash, no further
+  // output, emulator step ran 10+ minutes past its normal ~4 min total).
+  // DFServiceInitTask.run() almost certainly signals a latch/future that
+  // other init code blocks on waiting for completion - returning early
+  // without that signal deadlocks the app instead of crashing it, which is
+  // worse (silent, no crash log to diagnose from). Reverted to the same
+  // one-native-method-at-a-time pattern as the other fixes: neuter only
+  // LELogcat.nativeLog, leave the task's real control flow intact.
   try {
-    var DFTask = Java.use('com.ss.android.ugc.aweme.aab.modules.DFServiceInitTask');
-    DFTask.run.overloads.forEach(function (ol) {
+    var LELogcat = Java.use('com.ss.android.vesdklite.log.LELogcat');
+    LELogcat.nativeLog.overloads.forEach(function (ol) {
       ol.implementation = function () {
-        console.log('[STUB] skipped DFServiceInitTask.run (video-editing SDK init, unrelated to invite flow)');
         return undefined;
       };
     });
-    console.log('[Frida] DFServiceInitTask.run neutered');
-  } catch (eDF) {
-    console.log('[Frida] DFServiceInitTask.run hook failed: ' + eDF);
+    console.log('[Frida] LELogcat.nativeLog neutered');
+  } catch (eLog) {
+    console.log('[Frida] LELogcat.nativeLog hook failed: ' + eLog);
   }
 
   // Run 10: the broad scanner above crashed the app a different way -
