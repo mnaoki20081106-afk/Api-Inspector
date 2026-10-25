@@ -147,7 +147,7 @@ run() {
 
   # Attach Frida
   log "attaching frida for ${DURATION}s"
-  frida -U -n "$PKG" -l "$js" --no-pause --runtime=v8 \
+  frida -U -n "$PKG" -l "$js" --runtime=v8 \
     2>&1 | timeout "$DURATION" cat > "$OUT_DIR/frida_output.txt" || true
 
   # Extract unique URLs
