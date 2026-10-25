@@ -62,12 +62,12 @@ resolve_apk() {
   if [[ -n "$APK_PATH" ]]; then
     [[ "$APK_PATH" != /* && "$APK_PATH" != *..* && -f "$APK_PATH" ]] || { log "apk_path not found in checkout: $APK_PATH"; return 1; }
     log "using repo file $APK_PATH"
-    cp "$APK_PATH" apk/target.bin
+    cp "$APK_PATH" apk/target.apk
     return 0
   fi
   if [[ -n "$APK_URL" ]]; then
     log "downloading $APK_URL"
-    curl -fL --retry 3 --retry-delay 2 -o apk/target.bin "$APK_URL" || { log "download failed"; return 1; }
+    curl -fL --retry 3 --retry-delay 2 -o apk/target.apk "$APK_URL" || { log "download failed"; return 1; }
     return 0
   fi
   if [[ -n "$PKG" ]]; then
@@ -77,7 +77,7 @@ resolve_apk() {
     vc=$(curl -fsSL "https://f-droid.org/api/v1/packages/$PKG" \
          | python3 -c 'import sys,json; print(json.load(sys.stdin)["suggestedVersionCode"])' 2>/dev/null) || true
     if [[ -n "${vc:-}" ]]; then
-      curl -fL --retry 3 -o apk/target.bin "https://f-droid.org/repo/${PKG}_${vc}.apk" && return 0
+      curl -fL --retry 3 -o apk/target.apk "https://f-droid.org/repo/${PKG}_${vc}.apk" && return 0
     fi
     # last resort: maybe it's already on the image
     if adb_sh pm list packages | grep -qx "package:$PKG"; then
@@ -92,7 +92,7 @@ resolve_apk() {
 }
 
 install_apk() {
-  local f=apk/target.bin res
+  local f=apk/target.apk res
   # Try direct install first — handles plain APK regardless of internal layout
   res=$(adb install -r -g -t "$f" 2>&1)
   if grep -q '^Success' <<<"$res"; then
@@ -144,7 +144,7 @@ main() {
     echo "package=$PKG"
     echo "versionName=$(adb_sh dumpsys package "$PKG" | grep -m1 versionName | sed 's/^ *//')"
     echo "android=$(adb_sh getprop ro.build.version.release) sdk=$(adb_sh getprop ro.build.version.sdk) abi=$(adb_sh getprop ro.product.cpu.abi)"
-    [[ -f apk/target.bin ]] && echo "sha256=$(shasum -a 256 apk/target.bin | cut -d' ' -f1)"
+    [[ -f apk/target.apk ]] && echo "sha256=$(shasum -a 256 apk/target.apk | cut -d' ' -f1)"
     echo "apk_url=$APK_URL"
     echo "apk_path=$APK_PATH"
     echo "duration_sec=$DURATION"
