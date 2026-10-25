@@ -20,13 +20,6 @@ Java.perform(function () {
   var TAG = '[HTTP]';
 
   // -- -1. Universal native-method stub ---------------------------------------
-  // ARM libs are stripped from the APK so the x86_64 emulator has no native
-  // implementations. Once loadLibrary errors are suppressed (step 0), the VM
-  // still throws "No implementation found for native method" the first time
-  // any native-modifier Java method is actually invoked, which kills the app
-  // mid-init before it reaches any network/attribution code. Fix: walk every
-  // loaded class, find native methods via real Java reflection, and replace
-  // each with a stub that returns a default value for its declared type.
   var stubbedNative = {};
   function stubNativeMethods(className) {
     if (stubbedNative[className]) return;
@@ -37,7 +30,6 @@ Java.perform(function () {
       for (var i = 0; i < methods.length; i++) {
         var m = methods[i];
         var mods = m.getModifiers();
-        // java.lang.reflect.Modifier.NATIVE == 0x100
         if ((mods & 0x100) === 0) continue;
         var mname = m.getName();
         var retType = m.getReturnType().getName();
@@ -52,26 +44,17 @@ Java.perform(function () {
                 case 'byte': case 'short': case 'int': case 'char': return 0;
                 case 'long': return 0;
                 case 'float': case 'double': return 0.0;
-                default: return null; // Object / String / array
+                default: return null;
               }
             };
           });
           console.log('[STUB] native ' + className + '.' + mname +
             ' -> default ' + retType);
-        } catch (e3) {
-          // overload resolution failed for this one method; skip it
-        }
+        } catch (e3) {}
       }
-    } catch (e) {
-      // class not Java.use-able (e.g. interface, primitive) - ignore
-    }
+    } catch (e) {}
   }
 
-  // Exclude ART/system/framework packages: they have real native impls
-  // already resident in the VM, and stubbing them would break the runtime
-  // itself. Everything else (app code, vendor SDKs, obfuscated packages
-  // like ms.bd.*, X.*, etc.) is a candidate - TikTok's crashing native
-  // method lives in ms.bd.o.k, which no fixed prefix list would predict.
   var SYSTEM_PREFIXES = [
     'android.', 'androidx.', 'java.', 'javax.', 'dalvik.', 'sun.',
     'libcore.', 'kotlin.', 'kotlinx.', 'com.android.', 'org.apache.',
@@ -96,13 +79,6 @@ Java.perform(function () {
     }
   }
 
-  // Event-driven catch attempt: hook ClassLoader.loadClass so every class
-  // load is stubbed the instant it resolves. NOTE: confirmed in Run 8 this
-  // does NOT catch ms.bd.o.k - ART's ClassLinker resolves most implicit
-  // class references directly from the dex without ever calling the public
-  // loadClass() method, so this hook only helps for explicit Class.forName
-  // style lookups. Kept as a best-effort layer; see the targeted fix below
-  // for the actual crasher.
   try {
     var CL = Java.use('java.lang.ClassLoader');
     CL.loadClass.overloads.forEach(function (ol) {
@@ -122,17 +98,12 @@ Java.perform(function () {
     console.log('[Frida] ClassLoader.loadClass hook failed: ' + eCL);
   }
 
-  // Targeted fix for the confirmed crasher: ms.bd.o.k.a is reached only via
-  // com.ss.android.ugc.aweme.sec.SecApiImpl.initSec(). Rather than chase the
-  // obfuscated native class (ART resolves it before any Java-level hook can
-  // intervene), neuter initSec itself so the call chain never reaches the
-  // native method at all. This is ByteDance's security/anti-tamper SDK init,
-  // not anything needed for the invite/attribution flow we're after.
+  // Fix #1: SecApiImpl.initSec -> avoids ms.bd.o.k.a crash
   try {
     var SecApi = Java.use('com.ss.android.ugc.aweme.sec.SecApiImpl');
     SecApi.initSec.overloads.forEach(function (ol) {
       ol.implementation = function () {
-        console.log('[STUB] skipped SecApiImpl.initSec (avoids ms.bd.o.k.a native crash)');
+        console.log('[STUB] skipped SecApiImpl.initSec');
         return undefined;
       };
     });
@@ -141,17 +112,12 @@ Java.perform(function () {
     console.log('[Frida] SecApiImpl.initSec hook failed: ' + eSec);
   }
 
-  // Run 9: SecApiImpl.initSec bypass worked - app progressed further, then
-  // crashed on a different native init: com.tiktok.ttm.TTMCore$JNIHelper.init,
-  // called from PumbaaTask (a Lego background task) during TTM (template
-  // manager) setup. Unlike ms.bd.o.k this is a plain, non-obfuscated nested
-  // class name, so hook it directly by name instead of relying on the
-  // generic scanner (which may still lose the race on background threads).
+  // Fix #2: TTMCore$JNIHelper.init -> TTM native init
   try {
     var TTMHelper = Java.use('com.tiktok.ttm.TTMCore$JNIHelper');
     TTMHelper.init.overloads.forEach(function (ol) {
       ol.implementation = function () {
-        console.log('[STUB] skipped TTMCore$JNIHelper.init (native TTM init)');
+        console.log('[STUB] skipped TTMCore$JNIHelper.init');
         return undefined;
       };
     });
@@ -160,12 +126,7 @@ Java.perform(function () {
     console.log('[Frida] TTMCore$JNIHelper.init hook failed: ' + eTTM);
   }
 
-  // Run 11: app progressed well past the previous two crashers (JNI ref
-  // overflow fixed), reached DFServiceInitTask (dynamic feature module init)
-  // and crashed on com.ss.android.ugc.aweme.creativetool.nativeab
-  // .NativeABManager.nativeInit - creative-tool A/B flag native init,
-  // unrelated to invite/attribution. Same pattern: neuter the one Java
-  // call site directly.
+  // Fix #3: NativeABManager.nativeInit -> creative-tool A/B flag
   try {
     var NativeAB = Java.use('com.ss.android.ugc.aweme.creativetool.nativeab.NativeABManager');
     NativeAB.nativeInit.overloads.forEach(function (ol) {
@@ -179,19 +140,12 @@ Java.perform(function () {
     console.log('[Frida] NativeABManager.nativeInit hook failed: ' + eNAB);
   }
 
-  // Run 12-14: LELogcat.nativeLog was the leaf crasher, but Run 15 showed
-  // the real problem is LELogcat.<clinit> — the class's static initializer
-  // chains into X.8PF.LC -> X.8mf.onLoadNativeLibs -> X.0DI -> X.1Rz ->
-  // X.1S3.<clinit> which throws X.1S5 (custom native-load-failure wrapper).
-  // Java.use('LELogcat') itself triggers <clinit>, so the previous hook
-  // was counterproductive. Can't hook <clinit> with Frida.
-  // Fix: hook X.8mf.onLoadNativeLibs (the VESDK native loading entry point)
-  // to no-op. The class name is obfuscated but stable within this APK build.
+  // Fix #4: X.8mf.onLoadNativeLibs -> VESDK native loading entry point
   try {
     var VELoader = Java.use('X.8mf');
     VELoader.onLoadNativeLibs.overloads.forEach(function (ol) {
       ol.implementation = function () {
-        console.log('[STUB] skipped X.8mf.onLoadNativeLibs (VESDK native load)');
+        console.log('[STUB] skipped X.8mf.onLoadNativeLibs');
         return undefined;
       };
     });
@@ -200,23 +154,18 @@ Java.perform(function () {
     console.log('[Frida] X.8mf.onLoadNativeLibs hook failed: ' + eVE);
   }
 
-  // Run 16: LELogcat.nativeLog still crashes from a different thread
-  // (LegoExecutor_bootfinishWork-27). Now that X.8mf.onLoadNativeLibs is
-  // neutered, Java.use('LELogcat') safely triggers <clinit> without the
-  // native-load chain crashing. So we can directly stub nativeLog.
+  // Fix #5: LELogcat.nativeLog
   try {
     var LELog = Java.use('com.ss.android.vesdklite.log.LELogcat');
     LELog.nativeLog.overloads.forEach(function (ol) {
-      ol.implementation = function () {
-        return undefined;
-      };
+      ol.implementation = function () { return undefined; };
     });
     console.log('[Frida] LELogcat.nativeLog neutered');
   } catch (eLE) {
     console.log('[Frida] LELogcat.nativeLog hook failed: ' + eLE);
   }
 
-  // Fix #6: ApplogUtilsInvoker.nativeInit (VESDK monitoring init)
+  // Fix #6: ApplogUtilsInvoker.nativeInit
   try {
     var ApplogInv = Java.use('com.ss.android.vesdklite.moniter.ApplogUtilsInvoker');
     ApplogInv.nativeInit.overloads.forEach(function (ol) {
@@ -230,29 +179,9 @@ Java.perform(function () {
     console.log('[Frida] ApplogUtilsInvoker.nativeInit hook failed: ' + eAU);
   }
 
-  // Fix #7: VEUtilsLite.nativeRegisterFFmpegModule (VESDK FFmpeg init)
-  try {
-    var VEUtils = Java.use('com.ss.android.vesdklite.utils.VEUtilsLite');
-    VEUtils.nativeRegisterFFmpegModule.implementation = function () {
-        console.log('[STUB] skipped VEUtilsLite.nativeRegisterFFmpegModule');
-        return 0;
-    };
-    console.log('[Frida] VEUtilsLite.nativeRegisterFFmpegModule neutered');
-  } catch (eVU) {
-    console.log('[Frida] VEUtilsLite.nativeRegisterFFmpegModule hook failed: ' + eVU);
-  }
-
-  // Run 10: the broad scanner above crashed the app a different way -
-  // JNI ERROR (app bug): global reference table overflow (max=51200).
-  // Java.use() on every non-system class, re-run every 200ms for 120s,
-  // accumulates global refs faster than the table can hold alongside the
-  // app's own normal classloading. Both real native crashes (ms.bd.o.k,
-  // TTMCore$JNIHelper) are now handled by targeted named hooks above, which
-  // cost one Java.use() each instead of thousands, so disable the broad
-  // scan entirely rather than tune its rate - any further crasher gets
-  // diagnosed from the log and added above by name, the same way.
-  // scanLoadedClassesForNatives(); -- disabled, see note above
-  // var scanTimer = setInterval(scanLoadedClassesForNatives, 200); -- disabled
+  // Fix #7+8: VEUtilsLite — stub ALL native methods at once
+  stubNativeMethods('com.ss.android.vesdklite.utils.VEUtilsLite');
+  console.log('[Frida] VEUtilsLite all native methods neutered via scanner');
 
   // -- helpers ----------------------------------------------------------------
   function logReq(method, url, req) {
@@ -283,8 +212,6 @@ Java.perform(function () {
   }
 
   // -- 0. Suppress JNI load errors -------------------------------------------
-  // ARM libs stripped from APK -> UnsatisfiedLinkError on every loadLibrary call.
-  // Catch and swallow so Java bytecode keeps executing on x86_64 emulator.
   try {
     var Runtime = Java.use('java.lang.Runtime');
     ['load0', 'loadLibrary0'].forEach(function (meth) {
