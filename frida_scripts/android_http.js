@@ -160,6 +160,25 @@ Java.perform(function () {
     console.log('[Frida] TTMCore$JNIHelper.init hook failed: ' + eTTM);
   }
 
+  // Run 11: app progressed well past the previous two crashers (JNI ref
+  // overflow fixed), reached DFServiceInitTask (dynamic feature module init)
+  // and crashed on com.ss.android.ugc.aweme.creativetool.nativeab
+  // .NativeABManager.nativeInit - creative-tool A/B flag native init,
+  // unrelated to invite/attribution. Same pattern: neuter the one Java
+  // call site directly.
+  try {
+    var NativeAB = Java.use('com.ss.android.ugc.aweme.creativetool.nativeab.NativeABManager');
+    NativeAB.nativeInit.overloads.forEach(function (ol) {
+      ol.implementation = function () {
+        console.log('[STUB] skipped NativeABManager.nativeInit');
+        return undefined;
+      };
+    });
+    console.log('[Frida] NativeABManager.nativeInit neutered');
+  } catch (eNAB) {
+    console.log('[Frida] NativeABManager.nativeInit hook failed: ' + eNAB);
+  }
+
   // Run 10: the broad scanner above crashed the app a different way -
   // JNI ERROR (app bug): global reference table overflow (max=51200).
   // Java.use() on every non-system class, re-run every 200ms for 120s,
