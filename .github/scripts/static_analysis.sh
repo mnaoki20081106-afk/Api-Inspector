@@ -8,7 +8,7 @@ APK_URL="${APK_URL:-}"
 APK_PATH_IN="${APK_PATH:-}"
 PKG="${PACKAGE_NAME:-}"
 
-log() { echo "[static] $*"; }
+log() { echo "[static] $*" >&2; }
 
 # ---------------------------------------------------------------- download
 resolve_apk() {
@@ -73,6 +73,10 @@ section() { echo; echo "=== $1 ==="; }
 
 grep_ic() {
   grep -rn --include="*.java" -i "$1" "$JADX_OUT" 2>/dev/null | head -n "${2:-60}" || true
+}
+
+grep_str() {
+  grep -rn -i "$1" "$JADX_OUT" 2>/dev/null | head -n "${2:-60}" || true
 }
 
 extract_urls() {
