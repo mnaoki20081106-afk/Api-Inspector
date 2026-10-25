@@ -101,8 +101,8 @@ Java.perform(function () {
   // does NOT catch ms.bd.o.k - ART's ClassLinker resolves most implicit
   // class references directly from the dex without ever calling the public
   // loadClass() method, so this hook only helps for explicit Class.forName
-  // style lookups. Kept as a best-effort layer; see the targeted fix below
-  // for the actual crasher.
+  // style lookups. Kept as a best-effort layer; see the targeted fixes below
+  // for the actual crashers found so far.
   try {
     var CL = Java.use('java.lang.ClassLoader');
     CL.loadClass.overloads.forEach(function (ol) {
@@ -160,16 +160,17 @@ Java.perform(function () {
     console.log('[Frida] TTMCore$JNIHelper.init hook failed: ' + eTTM);
   }
 
-  // Initial pass over whatever is already loaded, plus periodic rescans as
-  // a fallback for classes that bypass loadClass (e.g. already resolved by
-  // the ART class linker before our hook attached).
-  scanLoadedClassesForNatives();
-  var scanCount = 0;
-  var scanTimer = setInterval(function () {
-    scanLoadedClassesForNatives();
-    scanCount++;
-    if (scanCount > 600) clearInterval(scanTimer); // ~120s of rescanning
-  }, 200);
+  // Run 10: the broad scanner above crashed the app a different way -
+  // JNI ERROR (app bug): global reference table overflow (max=51200).
+  // Java.use() on every non-system class, re-run every 200ms for 120s,
+  // accumulates global refs faster than the table can hold alongside the
+  // app's own normal classloading. Both real native crashes (ms.bd.o.k,
+  // TTMCore$JNIHelper) are now handled by targeted named hooks above, which
+  // cost one Java.use() each instead of thousands, so disable the broad
+  // scan entirely rather than tune its rate - any further crasher gets
+  // diagnosed from the log and added above by name, the same way.
+  // scanLoadedClassesForNatives(); -- disabled, see note above
+  // var scanTimer = setInterval(scanLoadedClassesForNatives, 200); -- disabled
 
   // -- helpers ----------------------------------------------------------------
   function logReq(method, url, req) {
