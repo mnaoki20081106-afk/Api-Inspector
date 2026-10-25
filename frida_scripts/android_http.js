@@ -3,6 +3,7 @@
  * android_http.js -- TikTok Lite API interceptor
  *
  * Hooks (in priority order):
+ * -1. Universal native-method stub (prevents crash after ARM libs stripped)
  *  0. Runtime.load0 / loadLibrary0  (suppress JNI errors -> pure-Java mode)
  *  1. okhttp3.internal.http.RealInterceptorChain.proceed  (all OkHttp3 calls)
  *  2. okhttp3.RealCall / okhttp3.internal.connection.RealCall (sync calls)
@@ -17,6 +18,79 @@
 
 Java.perform(function () {
   var TAG = '[HTTP]';
+
+  // -- -1. Universal native-method stub ---------------------------------------
+  // ARM libs are stripped from the APK so the x86_64 emulator has no native
+  // implementations. Once loadLibrary errors are suppressed (step 0), the VM
+  // still throws "No implementation found for native method" the first time
+  // any native-modifier Java method is actually invoked, which kills the app
+  // mid-init before it reaches any network/attribution code. Fix: walk every
+  // loaded class, find native methods via real Java reflection, and replace
+  // each with a stub that returns a default value for its declared type.
+  var stubbedNative = {};
+  function stubNativeMethods(className) {
+    if (stubbedNative[className]) return;
+    stubbedNative[className] = true;
+    try {
+      var JClass = Java.use(className).class;
+      var methods = JClass.getDeclaredMethods();
+      for (var i = 0; i < methods.length; i++) {
+        var m = methods[i];
+        var mods = m.getModifiers();
+        // java.lang.reflect.Modifier.NATIVE == 0x100
+        if ((mods & 0x100) === 0) continue;
+        var mname = m.getName();
+        var retType = m.getReturnType().getName();
+        try {
+          var W = Java.use(className);
+          var overloads = W[mname].overloads;
+          overloads.forEach(function (ol) {
+            ol.implementation = function () {
+              switch (retType) {
+                case 'void': return undefined;
+                case 'boolean': return false;
+                case 'byte': case 'short': case 'int': case 'char': return 0;
+                case 'long': return 0;
+                case 'float': case 'double': return 0.0;
+                default: return null; // Object / String / array
+              }
+            };
+          });
+          console.log('[STUB] native ' + className + '.' + mname +
+            ' -> default ' + retType);
+        } catch (e3) {
+          // overload resolution failed for this one method; skip it
+        }
+      }
+    } catch (e) {
+      // class not Java.use-able (e.g. interface, primitive) - ignore
+    }
+  }
+
+  function scanLoadedClassesForNatives() {
+    try {
+      Java.enumerateLoadedClassesSync().forEach(function (cn) {
+        if (cn.indexOf('com.zhiliaoapp') === 0 ||
+            cn.indexOf('com.ss.') === 0 ||
+            cn.indexOf('com.bytedance') === 0 ||
+            cn.indexOf('com.appsflyer') === 0) {
+          stubNativeMethods(cn);
+        }
+      });
+    } catch (e) {
+      console.log('[STUB] scan failed: ' + e);
+    }
+  }
+
+  // Initial pass over whatever is already loaded, then re-scan periodically
+  // for a while to catch classes the app loads lazily during init.
+  scanLoadedClassesForNatives();
+  var scanCount = 0;
+  var scanTimer = setInterval(function () {
+    scanLoadedClassesForNatives();
+    scanCount++;
+    if (scanCount > 20) clearInterval(scanTimer); // ~20s of rescanning
+  }, 1000);
 
   // -- helpers ----------------------------------------------------------------
   function logReq(method, url, req) {
