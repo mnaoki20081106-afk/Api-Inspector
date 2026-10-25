@@ -19,7 +19,6 @@
 Java.perform(function () {
   var TAG = '[HTTP]';
 
-  // -- -1. Universal native-method stub ---------------------------------------
   var stubbedNative = {};
   function stubNativeMethods(className) {
     if (stubbedNative[className]) return;
@@ -103,7 +102,7 @@ Java.perform(function () {
     var SecApi = Java.use('com.ss.android.ugc.aweme.sec.SecApiImpl');
     SecApi.initSec.overloads.forEach(function (ol) {
       ol.implementation = function () {
-        console.log('[STUB] skipped SecApiImpl.initSec (avoids ms.bd.o.k.a native crash)');
+        console.log('[STUB] skipped SecApiImpl.initSec');
         return undefined;
       };
     });
@@ -112,12 +111,12 @@ Java.perform(function () {
     console.log('[Frida] SecApiImpl.initSec hook failed: ' + eSec);
   }
 
-  // Fix #2: TTMCore$JNIHelper.init -> avoids TTM native init crash
+  // Fix #2: TTMCore$JNIHelper.init
   try {
     var TTMHelper = Java.use('com.tiktok.ttm.TTMCore$JNIHelper');
     TTMHelper.init.overloads.forEach(function (ol) {
       ol.implementation = function () {
-        console.log('[STUB] skipped TTMCore$JNIHelper.init (native TTM init)');
+        console.log('[STUB] skipped TTMCore$JNIHelper.init');
         return undefined;
       };
     });
@@ -145,7 +144,7 @@ Java.perform(function () {
     var VELoader = Java.use('X.8mf');
     VELoader.onLoadNativeLibs.overloads.forEach(function (ol) {
       ol.implementation = function () {
-        console.log('[STUB] skipped X.8mf.onLoadNativeLibs (VESDK native load)');
+        console.log('[STUB] skipped X.8mf.onLoadNativeLibs');
         return undefined;
       };
     });
@@ -154,7 +153,7 @@ Java.perform(function () {
     console.log('[Frida] X.8mf.onLoadNativeLibs hook failed: ' + eVE);
   }
 
-  // Fix #5: LELogcat.nativeLog (now safe after X.8mf neuters <clinit> chain)
+  // Fix #5: LELogcat.nativeLog (safe after X.8mf neuters <clinit> chain)
   try {
     var LELog = Java.use('com.ss.android.vesdklite.log.LELogcat');
     LELog.nativeLog.overloads.forEach(function (ol) {
@@ -165,6 +164,20 @@ Java.perform(function () {
     console.log('[Frida] LELogcat.nativeLog neutered');
   } catch (eLE) {
     console.log('[Frida] LELogcat.nativeLog hook failed: ' + eLE);
+  }
+
+  // Fix #6: ApplogUtilsInvoker.nativeInit (VESDK monitoring init)
+  try {
+    var ApplogInv = Java.use('com.ss.android.vesdklite.moniter.ApplogUtilsInvoker');
+    ApplogInv.nativeInit.overloads.forEach(function (ol) {
+      ol.implementation = function () {
+        console.log('[STUB] skipped ApplogUtilsInvoker.nativeInit');
+        return undefined;
+      };
+    });
+    console.log('[Frida] ApplogUtilsInvoker.nativeInit neutered');
+  } catch (eAU) {
+    console.log('[Frida] ApplogUtilsInvoker.nativeInit hook failed: ' + eAU);
   }
 
   // scanLoadedClassesForNatives(); -- disabled (JNI global ref overflow)
@@ -219,7 +232,7 @@ Java.perform(function () {
     console.log('[Frida] Runtime.load* failed: ' + e);
   }
 
-  // -- 1. RealInterceptorChain.proceed ----------------------------------------
+  // -- 1-3. OkHttp3 hooks (TikTok Lite uses Cronet, not OkHttp) ---------------
   var ric_hooked = false;
   try {
     var RIC = Java.use('okhttp3.internal.http.RealInterceptorChain');
@@ -234,13 +247,11 @@ Java.perform(function () {
       };
     });
     ric_hooked = true;
-    console.log('[Frida] RealInterceptorChain hooked (' +
-      RIC.proceed.overloads.length + ' overloads)');
+    console.log('[Frida] RealInterceptorChain hooked');
   } catch (e) {
     console.log('[Frida] RIC failed: ' + e);
   }
 
-  // -- 2a. okhttp3.RealCall (OkHttp3 < 4.x) -----------------------------------
   if (!ric_hooked) {
     try {
       var RC3 = Java.use('okhttp3.RealCall');
@@ -256,8 +267,6 @@ Java.perform(function () {
     } catch (e) {
       console.log('[Frida] RealCall3 failed: ' + e);
     }
-
-    // -- 2b. okhttp3.internal.connection.RealCall (OkHttp3 4.x) ---------------
     try {
       var RC4 = Java.use('okhttp3.internal.connection.RealCall');
       RC4.execute.implementation = function () {
@@ -277,7 +286,6 @@ Java.perform(function () {
     }
   }
 
-  // -- 3. OkHttpClient.newCall (URL catch-all) --------------------------------
   try {
     var OHC = Java.use('okhttp3.OkHttpClient');
     OHC.newCall.implementation = function (req) {
