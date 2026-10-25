@@ -2,18 +2,21 @@
 /**
  * android_http.js -- TikTok Lite API interceptor
  *
- * Hooks (in priority order):
+ * Hooks:
  * -1. Universal native-method stub (prevents crash after ARM libs stripped)
  *  0. Runtime.load0 / loadLibrary0  (suppress JNI errors -> pure-Java mode)
- *  1. okhttp3.internal.http.RealInterceptorChain.proceed  (all OkHttp3 calls)
- *  2. okhttp3.RealCall / okhttp3.internal.connection.RealCall (sync calls)
- *  3. okhttp3.OkHttpClient.newCall  (URL logger fallback)
+ *  1-3. OkHttp3 hooks (RealInterceptorChain, RealCall, newCall)
  *  4. java.net.URL.openConnection   (Cronet / legacy)
- *  5. com.appsflyer.share.ShareInviteHelper (invite link params)
+ *  5. ShareInviteHelper.logInvite   (invite link params)
  *  6. AppsFlyer logEvent            (attribution events)
  *  7. AFb1gSDK.onAttributionDataReceived (u_code from attribution)
  *
- * Output format: [HTTP] >> METHOD URL | [HTTP] << CODE URL | [AF] event
+ * Targeted crash fixes (8 classes):
+ *  #1 SecApiImpl.initSec            (security/anti-tamper SDK)
+ *  #2 TTMCore$JNIHelper.init        (template manager)
+ *  #3 NativeABManager.nativeInit    (creative-tool A/B flags)
+ *  #4 X.8mf.onLoadNativeLibs        (VESDK native loading entry)
+ *  #5-9 LELogcat, ApplogUtilsInvoker, VEUtilsLite (batch stub all natives)
  */
 
 Java.perform(function () {
@@ -67,18 +70,7 @@ Java.perform(function () {
     return false;
   }
 
-  function scanLoadedClassesForNatives() {
-    try {
-      Java.enumerateLoadedClassesSync().forEach(function (cn) {
-        if (!isSystemClass(cn)) {
-          stubNativeMethods(cn);
-        }
-      });
-    } catch (e) {
-      console.log('[STUB] scan failed: ' + e);
-    }
-  }
-
+  // Event-driven: stub native methods on every class as it loads
   try {
     var CL = Java.use('java.lang.ClassLoader');
     CL.loadClass.overloads.forEach(function (ol) {
@@ -98,6 +90,8 @@ Java.perform(function () {
     console.log('[Frida] ClassLoader.loadClass hook failed: ' + eCL);
   }
 
+  // -- Targeted crash fixes ---------------------------------------------------
+
   // Fix #1: SecApiImpl.initSec -> avoids ms.bd.o.k.a crash
   try {
     var SecApi = Java.use('com.ss.android.ugc.aweme.sec.SecApiImpl');
@@ -112,7 +106,7 @@ Java.perform(function () {
     console.log('[Frida] SecApiImpl.initSec hook failed: ' + eSec);
   }
 
-  // Fix #2: TTMCore$JNIHelper.init -> TTM native init
+  // Fix #2: TTMCore$JNIHelper.init
   try {
     var TTMHelper = Java.use('com.tiktok.ttm.TTMCore$JNIHelper');
     TTMHelper.init.overloads.forEach(function (ol) {
@@ -126,7 +120,7 @@ Java.perform(function () {
     console.log('[Frida] TTMCore$JNIHelper.init hook failed: ' + eTTM);
   }
 
-  // Fix #3: NativeABManager.nativeInit -> creative-tool A/B flag
+  // Fix #3: NativeABManager.nativeInit
   try {
     var NativeAB = Java.use('com.ss.android.ugc.aweme.creativetool.nativeab.NativeABManager');
     NativeAB.nativeInit.overloads.forEach(function (ol) {
@@ -140,7 +134,7 @@ Java.perform(function () {
     console.log('[Frida] NativeABManager.nativeInit hook failed: ' + eNAB);
   }
 
-  // Fix #4: X.8mf.onLoadNativeLibs -> VESDK native loading entry point
+  // Fix #4: X.8mf.onLoadNativeLibs (VESDK native loading entry point)
   try {
     var VELoader = Java.use('X.8mf');
     VELoader.onLoadNativeLibs.overloads.forEach(function (ol) {
@@ -154,34 +148,16 @@ Java.perform(function () {
     console.log('[Frida] X.8mf.onLoadNativeLibs hook failed: ' + eVE);
   }
 
-  // Fix #5: LELogcat.nativeLog
-  try {
-    var LELog = Java.use('com.ss.android.vesdklite.log.LELogcat');
-    LELog.nativeLog.overloads.forEach(function (ol) {
-      ol.implementation = function () { return undefined; };
-    });
-    console.log('[Frida] LELogcat.nativeLog neutered');
-  } catch (eLE) {
-    console.log('[Frida] LELogcat.nativeLog hook failed: ' + eLE);
-  }
-
-  // Fix #6: ApplogUtilsInvoker.nativeInit
-  try {
-    var ApplogInv = Java.use('com.ss.android.vesdklite.moniter.ApplogUtilsInvoker');
-    ApplogInv.nativeInit.overloads.forEach(function (ol) {
-      ol.implementation = function () {
-        console.log('[STUB] skipped ApplogUtilsInvoker.nativeInit');
-        return undefined;
-      };
-    });
-    console.log('[Frida] ApplogUtilsInvoker.nativeInit neutered');
-  } catch (eAU) {
-    console.log('[Frida] ApplogUtilsInvoker.nativeInit hook failed: ' + eAU);
-  }
-
-  // Fix #7+8: VEUtilsLite — stub ALL native methods at once
-  stubNativeMethods('com.ss.android.vesdklite.utils.VEUtilsLite');
-  console.log('[Frida] VEUtilsLite all native methods neutered via scanner');
+  // Fix #5-9: Batch-stub ALL native methods in known VESDK crasher classes
+  var vesdkClasses = [
+    'com.ss.android.vesdklite.log.LELogcat',
+    'com.ss.android.vesdklite.moniter.ApplogUtilsInvoker',
+    'com.ss.android.vesdklite.utils.VEUtilsLite'
+  ];
+  vesdkClasses.forEach(function (cls) {
+    stubNativeMethods(cls);
+    console.log('[Frida] ' + cls + ' all native methods neutered');
+  });
 
   // -- helpers ----------------------------------------------------------------
   function logReq(method, url, req) {
@@ -248,13 +224,12 @@ Java.perform(function () {
       };
     });
     ric_hooked = true;
-    console.log('[Frida] RealInterceptorChain hooked (' +
-      RIC.proceed.overloads.length + ' overloads)');
+    console.log('[Frida] RealInterceptorChain hooked');
   } catch (e) {
     console.log('[Frida] RIC failed: ' + e);
   }
 
-  // -- 2a. okhttp3.RealCall (OkHttp3 < 4.x) -----------------------------------
+  // -- 2. okhttp3.RealCall fallbacks ------------------------------------------
   if (!ric_hooked) {
     try {
       var RC3 = Java.use('okhttp3.RealCall');
@@ -270,8 +245,6 @@ Java.perform(function () {
     } catch (e) {
       console.log('[Frida] RealCall3 failed: ' + e);
     }
-
-    // -- 2b. okhttp3.internal.connection.RealCall (OkHttp3 4.x) ---------------
     try {
       var RC4 = Java.use('okhttp3.internal.connection.RealCall');
       RC4.execute.implementation = function () {
@@ -291,7 +264,7 @@ Java.perform(function () {
     }
   }
 
-  // -- 3. OkHttpClient.newCall (URL catch-all) --------------------------------
+  // -- 3. OkHttpClient.newCall ------------------------------------------------
   try {
     var OHC = Java.use('okhttp3.OkHttpClient');
     OHC.newCall.implementation = function (req) {
@@ -303,7 +276,7 @@ Java.perform(function () {
     console.log('[Frida] OkHttpClient.newCall failed: ' + e);
   }
 
-  // -- 4. java.net.URL.openConnection (legacy / Cronet) ----------------------
+  // -- 4. java.net.URL.openConnection -----------------------------------------
   try {
     var URL = Java.use('java.net.URL');
     URL.openConnection.overload().implementation = function () {
@@ -316,7 +289,7 @@ Java.perform(function () {
     console.log('[Frida] URL.openConnection failed: ' + e);
   }
 
-  // -- 5. ShareInviteHelper (invite link params -> u_code etc.) --------------
+  // -- 5. ShareInviteHelper ---------------------------------------------------
   try {
     var SIH = Java.use('com.appsflyer.share.ShareInviteHelper');
     SIH.logInvite.implementation = function (ctx, channel, map) {
@@ -337,12 +310,8 @@ Java.perform(function () {
     console.log('[Frida] ShareInviteHelper failed: ' + e);
   }
 
-  // -- 6. AppsFlyer logEvent (attribution + invite events) ------------------
-  var afClasses = [
-    'com.appsflyer.internal.AFb1vSDK',
-    'com.appsflyer.AppsFlyerLib'
-  ];
-  afClasses.forEach(function (cls) {
+  // -- 6. AppsFlyer logEvent --------------------------------------------------
+  ['com.appsflyer.internal.AFb1vSDK', 'com.appsflyer.AppsFlyerLib'].forEach(function (cls) {
     try {
       var AF = Java.use(cls);
       AF.logEvent.overloads.forEach(function (ol) {
@@ -363,7 +332,7 @@ Java.perform(function () {
     }
   });
 
-  // -- 7. AppsFlyer onAttributionDataReceived (u_code from attribution) -----
+  // -- 7. AppsFlyer onAttributionDataReceived ---------------------------------
   try {
     var AFb = Java.use('com.appsflyer.internal.AFb1gSDK');
     AFb.onAttributionDataReceived.overloads.forEach(function (ol) {
