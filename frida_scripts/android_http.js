@@ -70,7 +70,9 @@ Java.perform(function () {
   function scanLoadedClassesForNatives() {
     try {
       Java.enumerateLoadedClassesSync().forEach(function (cn) {
-        if (!isSystemClass(cn)) stubNativeMethods(cn);
+        if (!isSystemClass(cn)) {
+          stubNativeMethods(cn);
+        }
       });
     } catch (e) {
       console.log('[STUB] scan failed: ' + e);
@@ -96,44 +98,49 @@ Java.perform(function () {
     console.log('[Frida] ClassLoader.loadClass hook failed: ' + eCL);
   }
 
-  // Targeted fix #1: SecApiImpl.initSec -> avoids ms.bd.o.k.a crash
+  // Fix #1: SecApiImpl.initSec -> avoids ms.bd.o.k.a crash
   try {
     var SecApi = Java.use('com.ss.android.ugc.aweme.sec.SecApiImpl');
     SecApi.initSec.overloads.forEach(function (ol) {
-      ol.implementation = function () { return undefined; };
+      ol.implementation = function () {
+        console.log('[STUB] skipped SecApiImpl.initSec (avoids ms.bd.o.k.a native crash)');
+        return undefined;
+      };
     });
     console.log('[Frida] SecApiImpl.initSec neutered');
   } catch (eSec) {
     console.log('[Frida] SecApiImpl.initSec hook failed: ' + eSec);
   }
 
-  // Targeted fix #2: TTMCore$JNIHelper.init -> avoids TTM native init crash
+  // Fix #2: TTMCore$JNIHelper.init -> avoids TTM native init crash
   try {
     var TTMHelper = Java.use('com.tiktok.ttm.TTMCore$JNIHelper');
     TTMHelper.init.overloads.forEach(function (ol) {
-      ol.implementation = function () { return undefined; };
+      ol.implementation = function () {
+        console.log('[STUB] skipped TTMCore$JNIHelper.init (native TTM init)');
+        return undefined;
+      };
     });
     console.log('[Frida] TTMCore$JNIHelper.init neutered');
   } catch (eTTM) {
     console.log('[Frida] TTMCore$JNIHelper.init hook failed: ' + eTTM);
   }
 
-  // Targeted fix #3: NativeABManager.nativeInit
+  // Fix #3: NativeABManager.nativeInit
   try {
     var NativeAB = Java.use('com.ss.android.ugc.aweme.creativetool.nativeab.NativeABManager');
     NativeAB.nativeInit.overloads.forEach(function (ol) {
-      ol.implementation = function () { return undefined; };
+      ol.implementation = function () {
+        console.log('[STUB] skipped NativeABManager.nativeInit');
+        return undefined;
+      };
     });
     console.log('[Frida] NativeABManager.nativeInit neutered');
   } catch (eNAB) {
     console.log('[Frida] NativeABManager.nativeInit hook failed: ' + eNAB);
   }
 
-  // Targeted fix #4: X.8mf.onLoadNativeLibs (VESDK native loading entry)
-  // Run 15 showed LELogcat.<clinit> chains into X.8PF.LC -> X.8mf.onLoadNativeLibs
-  // -> X.0DI -> X.1Rz -> X.1S3.<clinit> which throws X.1S5. Java.use('LELogcat')
-  // itself triggers <clinit> so the old LELogcat.nativeLog hook was counterproductive.
-  // Hook the native loading entry point instead.
+  // Fix #4: X.8mf.onLoadNativeLibs (VESDK native loading entry)
   try {
     var VELoader = Java.use('X.8mf');
     VELoader.onLoadNativeLibs.overloads.forEach(function (ol) {
@@ -147,9 +154,20 @@ Java.perform(function () {
     console.log('[Frida] X.8mf.onLoadNativeLibs hook failed: ' + eVE);
   }
 
-  // Broad scanner disabled - causes JNI global reference table overflow
-  // scanLoadedClassesForNatives();
-  // var scanTimer = setInterval(scanLoadedClassesForNatives, 200);
+  // Fix #5: LELogcat.nativeLog (now safe after X.8mf neuters <clinit> chain)
+  try {
+    var LELog = Java.use('com.ss.android.vesdklite.log.LELogcat');
+    LELog.nativeLog.overloads.forEach(function (ol) {
+      ol.implementation = function () {
+        return undefined;
+      };
+    });
+    console.log('[Frida] LELogcat.nativeLog neutered');
+  } catch (eLE) {
+    console.log('[Frida] LELogcat.nativeLog hook failed: ' + eLE);
+  }
+
+  // scanLoadedClassesForNatives(); -- disabled (JNI global ref overflow)
 
   // -- helpers ----------------------------------------------------------------
   function logReq(method, url, req) {
@@ -239,6 +257,7 @@ Java.perform(function () {
       console.log('[Frida] RealCall3 failed: ' + e);
     }
 
+    // -- 2b. okhttp3.internal.connection.RealCall (OkHttp3 4.x) ---------------
     try {
       var RC4 = Java.use('okhttp3.internal.connection.RealCall');
       RC4.execute.implementation = function () {
@@ -258,7 +277,7 @@ Java.perform(function () {
     }
   }
 
-  // -- 3. OkHttpClient.newCall ------------------------------------------------
+  // -- 3. OkHttpClient.newCall (URL catch-all) --------------------------------
   try {
     var OHC = Java.use('okhttp3.OkHttpClient');
     OHC.newCall.implementation = function (req) {
@@ -270,7 +289,7 @@ Java.perform(function () {
     console.log('[Frida] OkHttpClient.newCall failed: ' + e);
   }
 
-  // -- 4. java.net.URL.openConnection -----------------------------------------
+  // -- 4. java.net.URL.openConnection (legacy / Cronet) ----------------------
   try {
     var URL = Java.use('java.net.URL');
     URL.openConnection.overload().implementation = function () {
@@ -283,7 +302,7 @@ Java.perform(function () {
     console.log('[Frida] URL.openConnection failed: ' + e);
   }
 
-  // -- 5. ShareInviteHelper ---------------------------------------------------
+  // -- 5. ShareInviteHelper (invite link params -> u_code etc.) --------------
   try {
     var SIH = Java.use('com.appsflyer.share.ShareInviteHelper');
     SIH.logInvite.implementation = function (ctx, channel, map) {
@@ -304,7 +323,7 @@ Java.perform(function () {
     console.log('[Frida] ShareInviteHelper failed: ' + e);
   }
 
-  // -- 6. AppsFlyer logEvent --------------------------------------------------
+  // -- 6. AppsFlyer logEvent (attribution + invite events) ------------------
   var afClasses = [
     'com.appsflyer.internal.AFb1vSDK',
     'com.appsflyer.AppsFlyerLib'
@@ -330,7 +349,7 @@ Java.perform(function () {
     }
   });
 
-  // -- 7. AppsFlyer onAttributionDataReceived ---------------------------------
+  // -- 7. AppsFlyer onAttributionDataReceived (u_code from attribution) -----
   try {
     var AFb = Java.use('com.appsflyer.internal.AFb1gSDK');
     AFb.onAttributionDataReceived.overloads.forEach(function (ol) {
