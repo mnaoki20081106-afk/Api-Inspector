@@ -67,13 +67,27 @@ Java.perform(function () {
     }
   }
 
+  // Exclude ART/system/framework packages: they have real native impls
+  // already resident in the VM, and stubbing them would break the runtime
+  // itself. Everything else (app code, vendor SDKs, obfuscated packages
+  // like ms.bd.*, X.*, etc.) is a candidate - TikTok's crashing native
+  // method lives in ms.bd.o.k, which no fixed prefix list would predict.
+  var SYSTEM_PREFIXES = [
+    'android.', 'androidx.', 'java.', 'javax.', 'dalvik.', 'sun.',
+    'libcore.', 'kotlin.', 'kotlinx.', 'com.android.', 'org.apache.',
+    'org.json.', 'okio.', 'org.xml.', 'org.w3c.', 'junit.', 'org.chromium.'
+  ];
+  function isSystemClass(cn) {
+    for (var i = 0; i < SYSTEM_PREFIXES.length; i++) {
+      if (cn.indexOf(SYSTEM_PREFIXES[i]) === 0) return true;
+    }
+    return false;
+  }
+
   function scanLoadedClassesForNatives() {
     try {
       Java.enumerateLoadedClassesSync().forEach(function (cn) {
-        if (cn.indexOf('com.zhiliaoapp') === 0 ||
-            cn.indexOf('com.ss.') === 0 ||
-            cn.indexOf('com.bytedance') === 0 ||
-            cn.indexOf('com.appsflyer') === 0) {
+        if (!isSystemClass(cn)) {
           stubNativeMethods(cn);
         }
       });
