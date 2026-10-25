@@ -141,6 +141,25 @@ Java.perform(function () {
     console.log('[Frida] SecApiImpl.initSec hook failed: ' + eSec);
   }
 
+  // Run 9: SecApiImpl.initSec bypass worked - app progressed further, then
+  // crashed on a different native init: com.tiktok.ttm.TTMCore$JNIHelper.init,
+  // called from PumbaaTask (a Lego background task) during TTM (template
+  // manager) setup. Unlike ms.bd.o.k this is a plain, non-obfuscated nested
+  // class name, so hook it directly by name instead of relying on the
+  // generic scanner (which may still lose the race on background threads).
+  try {
+    var TTMHelper = Java.use('com.tiktok.ttm.TTMCore$JNIHelper');
+    TTMHelper.init.overloads.forEach(function (ol) {
+      ol.implementation = function () {
+        console.log('[STUB] skipped TTMCore$JNIHelper.init (native TTM init)');
+        return undefined;
+      };
+    });
+    console.log('[Frida] TTMCore$JNIHelper.init neutered');
+  } catch (eTTM) {
+    console.log('[Frida] TTMCore$JNIHelper.init hook failed: ' + eTTM);
+  }
+
   // Initial pass over whatever is already loaded, plus periodic rescans as
   // a fallback for classes that bypass loadClass (e.g. already resolved by
   // the ART class linker before our hook attached).
