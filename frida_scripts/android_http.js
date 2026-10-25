@@ -179,6 +179,28 @@ Java.perform(function () {
     console.log('[Frida] NativeABManager.nativeInit hook failed: ' + eNAB);
   }
 
+  // Run 12: NativeABManager fix worked, but the very same DFServiceInitTask
+  // chain (CreativeToolImpl's native video-editing SDK init) hit yet another
+  // native method: com.ss.android.vesdklite.log.LELogcat.nativeLog - just a
+  // native logger call. This whole dynamic-feature module (video creative
+  // tools/camera/editor) is unrelated to the invite/attribution/coin flow
+  // we're tracing and is clearly riddled with native inits. Rather than
+  // whack-a-mole each one, neuter the task that starts the whole chain:
+  // DFServiceInitTask.run(). Skips CreativeToolImpl init (and everything
+  // under it: NativeABManager, LELogcat, etc.) in one hook.
+  try {
+    var DFTask = Java.use('com.ss.android.ugc.aweme.aab.modules.DFServiceInitTask');
+    DFTask.run.overloads.forEach(function (ol) {
+      ol.implementation = function () {
+        console.log('[STUB] skipped DFServiceInitTask.run (video-editing SDK init, unrelated to invite flow)');
+        return undefined;
+      };
+    });
+    console.log('[Frida] DFServiceInitTask.run neutered');
+  } catch (eDF) {
+    console.log('[Frida] DFServiceInitTask.run hook failed: ' + eDF);
+  }
+
   // Run 10: the broad scanner above crashed the app a different way -
   // JNI ERROR (app bug): global reference table overflow (max=51200).
   // Java.use() on every non-system class, re-run every 200ms for 120s,
