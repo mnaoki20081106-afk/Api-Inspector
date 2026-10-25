@@ -2,21 +2,18 @@
 /**
  * android_http.js -- TikTok Lite API interceptor
  *
- * Hooks:
+ * Hooks (in priority order):
  * -1. Universal native-method stub (prevents crash after ARM libs stripped)
  *  0. Runtime.load0 / loadLibrary0  (suppress JNI errors -> pure-Java mode)
- *  1-3. OkHttp3 hooks (RealInterceptorChain, RealCall, newCall)
+ *  1. okhttp3.internal.http.RealInterceptorChain.proceed  (all OkHttp3 calls)
+ *  2. okhttp3.RealCall / okhttp3.internal.connection.RealCall (sync calls)
+ *  3. okhttp3.OkHttpClient.newCall  (URL logger fallback)
  *  4. java.net.URL.openConnection   (Cronet / legacy)
- *  5. ShareInviteHelper.logInvite   (invite link params)
+ *  5. com.appsflyer.share.ShareInviteHelper (invite link params)
  *  6. AppsFlyer logEvent            (attribution events)
  *  7. AFb1gSDK.onAttributionDataReceived (u_code from attribution)
  *
- * Targeted crash fixes (8 classes):
- *  #1 SecApiImpl.initSec            (security/anti-tamper SDK)
- *  #2 TTMCore$JNIHelper.init        (template manager)
- *  #3 NativeABManager.nativeInit    (creative-tool A/B flags)
- *  #4 X.8mf.onLoadNativeLibs        (VESDK native loading entry)
- *  #5-9 LELogcat, ApplogUtilsInvoker, VEUtilsLite (batch stub all natives)
+ * Output format: [HTTP] >> METHOD URL | [HTTP] << CODE URL | [AF] event
  */
 
 Java.perform(function () {
@@ -70,7 +67,18 @@ Java.perform(function () {
     return false;
   }
 
-  // Event-driven: stub native methods on every class as it loads
+  function scanLoadedClassesForNatives() {
+    try {
+      Java.enumerateLoadedClassesSync().forEach(function (cn) {
+        if (!isSystemClass(cn)) {
+          stubNativeMethods(cn);
+        }
+      });
+    } catch (e) {
+      console.log('[STUB] scan failed: ' + e);
+    }
+  }
+
   try {
     var CL = Java.use('java.lang.ClassLoader');
     CL.loadClass.overloads.forEach(function (ol) {
@@ -89,8 +97,6 @@ Java.perform(function () {
   } catch (eCL) {
     console.log('[Frida] ClassLoader.loadClass hook failed: ' + eCL);
   }
-
-  // -- Targeted crash fixes ---------------------------------------------------
 
   // Fix #1: SecApiImpl.initSec -> avoids ms.bd.o.k.a crash
   try {
@@ -148,11 +154,12 @@ Java.perform(function () {
     console.log('[Frida] X.8mf.onLoadNativeLibs hook failed: ' + eVE);
   }
 
-  // Fix #5-9: Batch-stub ALL native methods in known VESDK crasher classes
+  // Fix #5-10: Batch stub ALL native methods in known crasher classes
   var vesdkClasses = [
     'com.ss.android.vesdklite.log.LELogcat',
     'com.ss.android.vesdklite.moniter.ApplogUtilsInvoker',
-    'com.ss.android.vesdklite.utils.VEUtilsLite'
+    'com.ss.android.vesdklite.utils.VEUtilsLite',
+    'com.ss.android.vesdklite.log.LELog2ClientInvoker'
   ];
   vesdkClasses.forEach(function (cls) {
     stubNativeMethods(cls);
@@ -224,12 +231,13 @@ Java.perform(function () {
       };
     });
     ric_hooked = true;
-    console.log('[Frida] RealInterceptorChain hooked');
+    console.log('[Frida] RealInterceptorChain hooked (' +
+      RIC.proceed.overloads.length + ' overloads)');
   } catch (e) {
     console.log('[Frida] RIC failed: ' + e);
   }
 
-  // -- 2. okhttp3.RealCall fallbacks ------------------------------------------
+  // -- 2a. okhttp3.RealCall ---------------------------------------------------
   if (!ric_hooked) {
     try {
       var RC3 = Java.use('okhttp3.RealCall');
@@ -245,6 +253,7 @@ Java.perform(function () {
     } catch (e) {
       console.log('[Frida] RealCall3 failed: ' + e);
     }
+
     try {
       var RC4 = Java.use('okhttp3.internal.connection.RealCall');
       RC4.execute.implementation = function () {
@@ -311,7 +320,11 @@ Java.perform(function () {
   }
 
   // -- 6. AppsFlyer logEvent --------------------------------------------------
-  ['com.appsflyer.internal.AFb1vSDK', 'com.appsflyer.AppsFlyerLib'].forEach(function (cls) {
+  var afClasses = [
+    'com.appsflyer.internal.AFb1vSDK',
+    'com.appsflyer.AppsFlyerLib'
+  ];
+  afClasses.forEach(function (cls) {
     try {
       var AF = Java.use(cls);
       AF.logEvent.overloads.forEach(function (ol) {
