@@ -96,15 +96,41 @@ Java.perform(function () {
     }
   }
 
-  // Initial pass over whatever is already loaded, then re-scan periodically
-  // for a while to catch classes the app loads lazily during init.
+  // Event-driven catch: polling enumerateLoadedClassesSync loses the race
+  // when a background thread loads an obfuscated vendor class (e.g.
+  // ms.bd.o.k) and calls its native method within the same tick (confirmed
+  // in Run 7 - ms.bd.o.k.a crashed despite 1s/200ms polling). Hook
+  // ClassLoader.loadClass itself so every class load is stubbed the instant
+  // it resolves, synchronously, before any caller can invoke a method on it.
+  try {
+    var CL = Java.use('java.lang.ClassLoader');
+    CL.loadClass.overloads.forEach(function (ol) {
+      ol.implementation = function () {
+        var cls = ol.apply(this, arguments);
+        try {
+          var name = arguments[0];
+          if (typeof name === 'string' && !isSystemClass(name)) {
+            stubNativeMethods(name);
+          }
+        } catch (eL) {}
+        return cls;
+      };
+    });
+    console.log('[Frida] ClassLoader.loadClass hooked (event-driven native stub)');
+  } catch (eCL) {
+    console.log('[Frida] ClassLoader.loadClass hook failed: ' + eCL);
+  }
+
+  // Initial pass over whatever is already loaded, plus periodic rescans as
+  // a fallback for classes that bypass loadClass (e.g. already resolved by
+  // the ART class linker before our hook attached).
   scanLoadedClassesForNatives();
   var scanCount = 0;
   var scanTimer = setInterval(function () {
     scanLoadedClassesForNatives();
     scanCount++;
-    if (scanCount > 20) clearInterval(scanTimer); // ~20s of rescanning
-  }, 1000);
+    if (scanCount > 600) clearInterval(scanTimer); // ~120s of rescanning
+  }, 200);
 
   // -- helpers ----------------------------------------------------------------
   function logReq(method, url, req) {
