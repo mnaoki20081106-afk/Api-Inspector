@@ -80,14 +80,16 @@ jobs:
             cat "out/$f"
             echo "::endgroup::"
           done
+          url_count=0
+          [ -f out/urls.txt ] && url_count=$(wc -l < out/urls.txt)
           {
             echo "## TikTok Lite Frida Analysis"
             echo '```'; cat out/meta.txt 2>/dev/null; echo '```'
-            echo "### Captured endpoints ($(wc -l < out/urls.txt 2>/dev/null || echo 0))"
+            echo "### Captured endpoints (${url_count})"
             echo '```'; cat out/urls.txt 2>/dev/null; echo '```'
             echo "### Frida output (first 600 lines)"
             echo '```'; head -600 out/frida_output.txt 2>/dev/null; echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } >> "$GITHUB_STEP_SUMMARY" || true
 
       - uses: actions/upload-artifact@v4
         if: always()
